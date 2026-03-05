@@ -52,7 +52,7 @@ func TestDirectorAgent_InitWorld(t *testing.T) {
 		}`,
 	}
 
-	agent := NewDirectorAgent(provider)
+	agent := NewDirectorAgent(provider, nil)
 	world, err := agent.InitWorld(context.Background(), "test idea", "fantasy", 100)
 	if err != nil {
 		t.Fatalf("InitWorld failed: %v", err)

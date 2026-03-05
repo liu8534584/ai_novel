@@ -16,23 +16,24 @@ func NewWriterAgent(provider core.Provider) *WriterAgent {
 	return &WriterAgent{llmProvider: provider}
 }
 
-// WriterContext 写作上下文结构
+// WriterContext 写作上下文结构 (支持三层记忆)
 type WriterContext struct {
-	WorldSummary      string
-	OutlineSummary    string
-	CharacterStates   string
+	WorldSummary      string // 第一层：固定世界观 (世界规则、能量体系)
+	OutlineSummary    string // 宏观大纲 / 本卷主线 (映射自 StoryArc)
+	CharacterStates   string // 第二层：角色动态状态 (境界、关系、心理)
 	ChapterIndex      int
 	ChapterTitle      string
-	ChapterObjective  string
-	RetrievedMemories string // 长期记忆 (RAG)
-	LastChapterTail   string // 短期记忆 (线性接戏)
-	Foreshadowing     string // 未回收伏笔 (Open Events)
+	ChapterObjective  string // 阶段B的本章蓝图 (映射自 ChapterBlueprint.Summary)
+	RecentContext     string // 第三层：最近 3-5 章滑动窗口摘要 (新增核心字段)
+	RetrievedMemories string // 长期记忆 (RAG 召回的历史关键信息)
+	LastChapterTail   string // 短期记忆 (用于文本无缝拼接的上一章结尾)
+	Foreshadowing     string // 待回收的伏笔列表
 	TargetWords       int
 }
 
 // SplicingAlgorithm 返回拼接后的上下文描述（用于调试或日志）
 func (c WriterContext) SplicingAlgorithm() string {
-	return fmt.Sprintf("World + Outline + Characters + Recent(Memories+Tail) + OpenEvents(Foreshadowing)")
+	return fmt.Sprintf("World + Outline + Characters + RecentContext(SlidingWindow) + RAG(Memories) + Tail + OpenEvents(Foreshadowing)")
 }
 
 // GenerateChapterObjective 生成本章节的写作目标和策略

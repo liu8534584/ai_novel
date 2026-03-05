@@ -331,3 +331,27 @@ type ChapterHealthScore struct {
 	TotalHealth      float64 `json:"total_health"`      // 综合健康度评分
 	AuditReport      string  `json:"audit_report" gorm:"type:text"` // 审计建议
 }
+
+// StoryArc 表示剧情树/分卷，由远程大模型生成
+type StoryArc struct {
+	gorm.Model
+	BookID        uint   `json:"book_id" gorm:"index"`
+	StartChapter  int    `json:"start_chapter"`
+	EndChapter    int    `json:"end_chapter"`
+	MainConflict  string `json:"main_conflict" gorm:"type:text"`  // 核心冲突
+	TurningPoints string `json:"turning_points" gorm:"type:text"` // 关键转折点 (JSON Array)
+	Climax        string `json:"climax" gorm:"type:text"`         // 高潮设计
+	Foreshadowing string `json:"foreshadowing" gorm:"type:text"`  // 埋下或需回收的伏笔
+}
+
+// ChapterBlueprint 表示单章蓝图，由远程大模型基于 StoryArc 生成
+type ChapterBlueprint struct {
+	gorm.Model
+	BookID           uint   `json:"book_id" gorm:"index"`
+	ChapterIndex     int    `json:"chapter_index" gorm:"index"`
+	Title            string `json:"title"`
+	Summary          string `json:"summary" gorm:"type:text"`           // 本章预计发生什么
+	CharacterChanges string `json:"character_changes" gorm:"type:text"` // 预计角色状态变化
+	WorldChanges     string `json:"world_changes" gorm:"type:text"`     // 预计世界线变动
+	NewForeshadowing string `json:"new_foreshadowing" gorm:"type:text"` // 新增伏笔
+}

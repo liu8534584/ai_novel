@@ -59,7 +59,7 @@ func main() {
 	}
 
 	// Auto Migrate the schema
-	err = db.AutoMigrate(&models.Book{}, &models.Chapter{}, &models.ChapterVersion{}, &models.VectorRecord{}, &models.Character{}, &models.CharacterStateRecord{}, &models.StoryEvent{}, &models.OutlineVersion{}, &models.Foreshadowing{}, &models.CharacterAnchor{}, &models.OOCScore{}, &models.StoryContradiction{}, &models.ChapterHealthScore{})
+	err = db.AutoMigrate(&models.Book{}, &models.Chapter{}, &models.ChapterVersion{}, &models.VectorRecord{}, &models.Character{}, &models.CharacterStateRecord{}, &models.StoryEvent{}, &models.OutlineVersion{}, &models.Foreshadowing{}, &models.CharacterAnchor{}, &models.OOCScore{}, &models.StoryContradiction{}, &models.ChapterHealthScore{}, &models.StoryArc{}, &models.ChapterBlueprint{})
 	if err != nil {
 		log.Fatal("failed to migrate database: ", err)
 	}
@@ -71,7 +71,7 @@ func main() {
 	llmProvider := llm.NewDynamicProvider(db, baseProvider)
 
 	// 3. Initialize Agents
-	directorAgent := agent.NewDirectorAgent(llmProvider)
+	directorAgent := agent.NewDirectorAgent(llmProvider, db)
 	outlinerAgent := agent.NewOutlinerAgent(llmProvider)
 	writerAgent := agent.NewWriterAgent(llmProvider)
 	stateAgent := agent.NewStateAgent(llmProvider)

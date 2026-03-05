@@ -36,7 +36,7 @@ func (h *BookHandler) ChatInspiration(c *gin.Context) {
 		return
 	}
 
-	director := agent.NewDirectorAgent(h.llmProvider)
+	director := agent.NewDirectorAgent(h.llmProvider, h.db)
 	resp, err := director.ChatForInspiration(context.Background(), req.Messages)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
@@ -55,7 +55,7 @@ func (h *BookHandler) FinalizeInspiration(c *gin.Context) {
 		return
 	}
 
-	director := agent.NewDirectorAgent(h.llmProvider)
+	director := agent.NewDirectorAgent(h.llmProvider, h.db)
 	inspiration, err := director.FinalizeInspiration(context.Background(), req.Conversation)
 	if err != nil {
 		response.Error(c, http.StatusInternalServerError, err.Error())
