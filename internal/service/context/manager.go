@@ -121,8 +121,8 @@ func (m *ContextManager) AssembleWriterContext(ctx context.Context, bookID uint,
 	// --- 第二层：动态角色状态 ---
 	charStates := m.buildCharacterStates(book.Characters)
 
-	// --- 第三层：最近 3-5 章滑动窗口摘要 ---
-	recentContext := m.buildRecentContext(ctx, bookID, chapterIndex)
+	// --- 第三层：最近 3 章滑动窗口摘要 (基于 ChapterBlueprint) ---
+	recentContext := m.buildBlueprintRecentContext(bookID, chapterIndex)
 
 	// --- 蓝图映射：从 ChapterBlueprint 获取本章目标 ---
 	var blueprint models.ChapterBlueprint
@@ -152,10 +152,12 @@ func (m *ContextManager) AssembleWriterContext(ctx context.Context, bookID uint,
 		chapterTitle = blueprint.Title
 	}
 
-	// --- RAG 召回 ---
-	query := fmt.Sprintf("%s %s", chapterTitle, chapterObjective)
-	memories := m.recallMemories(ctx, bookID, chapterTitle, chapterObjective)
-	_ = query
+	// --- RAG 召回：以 Blueprint.Summary 为 query，召回 Top 3 历史 StoryEvent ---
+	ragQuery := blueprint.Summary
+	if ragQuery == "" {
+		ragQuery = fmt.Sprintf("%s %s", chapterTitle, chapterObjective)
+	}
+	memories := m.recallStoryEvents(ctx, bookID, ragQuery)
 
 	// --- 伏笔 ---
 	foreshadowingText := m.buildForeshadowingText(bookID)
@@ -317,7 +319,7 @@ func (m *ContextManager) buildForeshadowingText(bookID uint) string {
 	return ""
 }
 
-// getLastChapterTail 获取上一章结尾
+// getLastChapterTail 获取上一章结尾 (按 Rune 截取最后 500 字符，防止中文乱码)
 func (m *ContextManager) getLastChapterTail(bookID uint, currentOrder int) string {
 	if currentOrder <= 1 {
 		return ""
@@ -326,10 +328,47 @@ func (m *ContextManager) getLastChapterTail(bookID uint, currentOrder int) strin
 	var prevChapter models.Chapter
 	if err := m.db.Where("book_id = ? AND `order` = ?", bookID, currentOrder-1).First(&prevChapter).Error; err == nil {
 		content := prevChapter.Content
-		if len(content) > 1000 {
-			return content[len(content)-1000:]
+		runes := []rune(content)
+		if len(runes) > 500 {
+			return string(runes[len(runes)-500:])
 		}
 		return content
 	}
 	return ""
+}
+
+// buildBlueprintRecentContext 基于 ChapterBlueprint 构建滑动窗口摘要 (最近 3 章)
+func (m *ContextManager) buildBlueprintRecentContext(bookID uint, chapterIndex int) string {
+	startIndex := chapterIndex - 3
+	if startIndex < 1 {
+		startIndex = 1
+	}
+
+	var blueprints []models.ChapterBlueprint
+	if err := m.db.Where("book_id = ? AND chapter_index >= ? AND chapter_index < ?",
+		bookID, startIndex, chapterIndex).
+		Order("chapter_index ASC").Find(&blueprints).Error; err != nil {
+		return ""
+	}
+
+	if len(blueprints) == 0 {
+		return ""
+	}
+
+	var summaries []string
+	for _, bp := range blueprints {
+		if bp.Summary != "" {
+			summaries = append(summaries, fmt.Sprintf("【第%d章 - %s】%s", bp.ChapterIndex, bp.Title, bp.Summary))
+		}
+	}
+	return strings.Join(summaries, "\n\n")
+}
+
+// recallStoryEvents 专用 RAG 召回：在 event category 中检索 Top 3 历史 StoryEvent
+func (m *ContextManager) recallStoryEvents(ctx context.Context, bookID uint, query string) string {
+	results, err := m.rag.Recall(ctx, bookID, query, 3, "event")
+	if err != nil || results == "" {
+		return ""
+	}
+	return results
 }

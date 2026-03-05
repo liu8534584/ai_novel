@@ -304,18 +304,20 @@ func (a *DirectorAgent) GenerateBlueprint(ctx context.Context, arcID uint, chapt
 }
 
 // ExecuteWriting 阶段C：组装上下文 → 调用本地写作模型生成正文
+// 返回值：streamChan (流式输出), finalChan (完整正文, channel关闭时发送), error
 func (a *DirectorAgent) ExecuteWriting(
 	ctx context.Context,
 	ctxMgr ContextAssembler,
 	writerAgent *WriterAgent,
 	bookID uint,
+	chapterID uint,
 	chapterIndex int,
 	writerModelName string,
-) (<-chan string, error) {
+) (<-chan string, <-chan string, error) {
 	// 1. 组装完整三层记忆上下文
 	wCtx, err := ctxMgr.AssembleWriterContext(ctx, bookID, chapterIndex)
 	if err != nil {
-		return nil, fmt.Errorf("failed to assemble writer context: %w", err)
+		return nil, nil, fmt.Errorf("failed to assemble writer context: %w", err)
 	}
 
 	logger.Info("ExecuteWriting: Book=%d Chapter=%d | Context Algorithm: %s", bookID, chapterIndex, wCtx.SplicingAlgorithm())
@@ -323,7 +325,7 @@ func (a *DirectorAgent) ExecuteWriting(
 	// 2. 渲染 Prompt
 	rendered, err := prompt.GetRegistry().Render("writer_layered", wCtx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to render writer prompt: %w", err)
+		return nil, nil, fmt.Errorf("failed to render writer prompt: %w", err)
 	}
 
 	messages := []core.Message{
@@ -339,20 +341,30 @@ func (a *DirectorAgent) ExecuteWriting(
 
 	streamResp, err := a.llmProvider.StreamChat(ctx, messages, options)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start writing stream: %w", err)
+		return nil, nil, fmt.Errorf("failed to start writing stream: %w", err)
 	}
 
 	outputChan := make(chan string)
+	finalChan := make(chan string, 1)
 	go func() {
 		defer close(outputChan)
+		defer close(finalChan)
+		var sb strings.Builder
 		for r := range streamResp {
 			if r.Content != "" {
+				sb.WriteString(r.Content)
 				outputChan <- r.Content
 			}
 		}
+		fullContent := sb.String()
+		finalChan <- fullContent
+		// 自动落库：防御性持久化，避免流式中断导致数据丢失
+		if fullContent != "" {
+			a.persistChapterContent(bookID, chapterID, chapterIndex, fullContent)
+		}
 	}()
 
-	return outputChan, nil
+	return outputChan, finalChan, nil
 }
 
 // PostProcessChapter 阶段D：调用远程逻辑大模型提取状态，更新记忆系统
@@ -389,9 +401,13 @@ func (a *DirectorAgent) PostProcessChapter(
 ## 章节正文
 %s
 
-请以纯 JSON 格式返回，包含以下两个顶层字段：
+请以纯 JSON 格式返回，包含以下三个顶层字段：
 1. "character_states": 对象，key 为角色名，value 包含 identity_location, goal, emotional_state, relationship_changes, ability_resource_changes, constraints_costs, key_actions, conflicts_foreshadowing
 2. "new_events": 数组，每项包含 event_type (主线推进/冲突升级/世界规则揭示/角色转折), description, involved_characters, direct_consequence, unresolved_impact, importance (1-5)
+3. "litrpg_state_changes": 对象，key 为角色名，value 包含：
+   - inventory_changes: { "new_items": ["物品A"], "removed_items": ["物品B"] } (物品增减)
+   - stats_delta: { "HP": -10, "Exp": 50 } (数值属性增量变化)
+   如果角色没有物品或数值变化，该角色可省略。
 
 仅返回 JSON。`,
 		strings.Join(charNames, ", "),
@@ -424,6 +440,13 @@ func (a *DirectorAgent) PostProcessChapter(
 			UnresolvedImpact   string `json:"unresolved_impact"`
 			Importance         int    `json:"importance"`
 		} `json:"new_events"`
+		LitRPGStateChanges map[string]struct {
+			InventoryChanges struct {
+				NewItems     []string `json:"new_items"`
+				RemovedItems []string `json:"removed_items"`
+			} `json:"inventory_changes"`
+			StatsDelta map[string]int `json:"stats_delta"`
+		} `json:"litrpg_state_changes"`
 	}
 
 	cleanJSON := core.ParseJSON(resp.Content)
@@ -472,10 +495,96 @@ func (a *DirectorAgent) PostProcessChapter(
 		logger.Info("Warning: failed to index chapter content: %v", err)
 	}
 
-	logger.Info("PostProcessChapter completed: Book=%d Chapter=%d | States=%d Events=%d",
-		bookID, chapterID, len(postResult.CharacterStates), len(postResult.NewEvents))
+	// 7. 持久化 LitRPG 状态变更（物品 & 数值）
+	for charName, changes := range postResult.LitRPGStateChanges {
+		var char models.Character
+		if err := a.db.Where("book_id = ? AND name = ?", bookID, charName).First(&char).Error; err != nil {
+			logger.Info("Warning: character %s not found for LitRPG state update: %v", charName, err)
+			continue
+		}
+		// 初始化
+		if char.Inventory == nil {
+			char.Inventory = []string{}
+		}
+		if char.Stats == nil {
+			char.Stats = map[string]int{}
+		}
+		// 追加新物品
+		char.Inventory = append(char.Inventory, changes.InventoryChanges.NewItems...)
+		// 移除消耗物品
+		for _, rm := range changes.InventoryChanges.RemovedItems {
+			for i, item := range char.Inventory {
+				if item == rm {
+					char.Inventory = append(char.Inventory[:i], char.Inventory[i+1:]...)
+					break
+				}
+			}
+		}
+		// 累加数值变化
+		for k, v := range changes.StatsDelta {
+			char.Stats[k] += v
+		}
+		// 持久化
+		a.db.Model(&char).Updates(map[string]interface{}{
+			"inventory": char.Inventory,
+			"stats":     char.Stats,
+		})
+		logger.Info("LitRPG state updated for %s: Inventory=%v Stats=%v", charName, char.Inventory, char.Stats)
+	}
+
+	logger.Info("PostProcessChapter completed: Book=%d Chapter=%d | States=%d Events=%d LitRPG=%d",
+		bookID, chapterID, len(postResult.CharacterStates), len(postResult.NewEvents), len(postResult.LitRPGStateChanges))
 
 	return nil
+}
+
+// persistChapterContent 防御性落库：将流式输出的完整正文保存到 chapters 表并创建版本记录
+func (a *DirectorAgent) persistChapterContent(bookID, chapterID uint, chapterIndex int, fullContent string) {
+	wordCount := len([]rune(fullContent))
+
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		// 获取最新版本号
+		var lastVersion models.ChapterVersion
+		nextVersionNum := 1
+		if err := tx.Where("chapter_id = ?", chapterID).Order("version desc").First(&lastVersion).Error; err == nil {
+			nextVersionNum = lastVersion.Version + 1
+		}
+
+		// 创建版本记录
+		version := models.ChapterVersion{
+			ChapterID: chapterID,
+			Version:   nextVersionNum,
+			Content:   fullContent,
+			WordCount: wordCount,
+		}
+		if err := tx.Create(&version).Error; err != nil {
+			return err
+		}
+
+		// 更新章节主表
+		if err := tx.Model(&models.Chapter{}).Where("id = ?", chapterID).Updates(map[string]interface{}{
+			"content":         fullContent,
+			"current_version": nextVersionNum,
+		}).Error; err != nil {
+			return err
+		}
+
+		// 更新书籍当前状态
+		if err := tx.Model(&models.Book{}).Where("id = ?", bookID).Update("current_state", models.CurrentState{
+			ChapterIndex: chapterIndex,
+			Summary:      fmt.Sprintf("Pipeline completed Chapter %d (Version: %d, Words: %d)", chapterIndex, nextVersionNum, wordCount),
+		}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		logger.Info("Warning: failed to persist chapter content: %v", err)
+	} else {
+		logger.Info("Auto-persisted chapter content: Book=%d Chapter=%d Words=%d", bookID, chapterID, wordCount)
+	}
 }
 
 // ContextAssembler 接口，用于解耦 DirectorAgent 与 ContextManager

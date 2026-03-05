@@ -149,7 +149,9 @@ type Character struct {
 	Name         string                `json:"name"`
 	Role         string                `json:"role"` // e.g., Protagonist, Antagonist
 	Description  string                `json:"description"`
-	DynamicState CharacterDynamicState `gorm:"serializer:json" json:"dynamic_state"` // 角色动态状态表
+	DynamicState CharacterDynamicState `gorm:"serializer:json;type:json" json:"dynamic_state"` // 角色动态状态表
+	Inventory    []string              `gorm:"serializer:json;type:json" json:"inventory"`      // LitRPG: 全局物品栏
+	Stats        map[string]int        `gorm:"serializer:json;type:json" json:"stats"`          // LitRPG: 数值面板 (HP/MP/Exp 等)
 }
 
 // CharacterStateRecord 角色状态变更记录 (历史轨迹)
@@ -339,7 +341,7 @@ type StoryArc struct {
 	StartChapter  int    `json:"start_chapter"`
 	EndChapter    int    `json:"end_chapter"`
 	MainConflict  string `json:"main_conflict" gorm:"type:text"`  // 核心冲突
-	TurningPoints string `json:"turning_points" gorm:"type:text"` // 关键转折点 (JSON Array)
+	TurningPoints string `json:"turning_points" gorm:"type:json"` // 关键转折点 (JSON Array)
 	Climax        string `json:"climax" gorm:"type:text"`         // 高潮设计
 	Foreshadowing string `json:"foreshadowing" gorm:"type:text"`  // 埋下或需回收的伏笔
 }
