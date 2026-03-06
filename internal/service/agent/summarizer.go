@@ -42,7 +42,7 @@ func (a *SummarizerAgent) SummarizeChapter(ctx context.Context, title, content s
 		return "", err
 	}
 
-	return resp.Content, nil
+	return core.RemoveReasoningContent(resp.Content), nil
 }
 
 func (a *SummarizerAgent) summarize(ctx context.Context, contentType string, content string) (string, error) {
@@ -69,5 +69,5 @@ func (a *SummarizerAgent) summarize(ctx context.Context, contentType string, con
 		return "", err
 	}
 
-	return resp.Content, nil
+	return core.RemoveReasoningContent(resp.Content), nil
 }

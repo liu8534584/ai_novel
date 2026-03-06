@@ -31,31 +31,11 @@ func (a *OutlinerAgent) GenerateOutline(
 	chapterNum int,
 	userIntent string,
 ) (*model.ChapterOutline, error) {
-
-	// 1. 使用 Registry 渲染动态 Prompt
-	data := map[string]interface{}{
-		"WorldSetting": worldConfig,
-		"Characters":   characters,
-		"StoryOutline": storyOutline,
-		"ChapterTitle": chapterTitle,
-		"AllTitles":    allTitles,
-		"CurrentState": currentState,
-		"PrevSummary":  prevSummary,
-		"ChapterNum":   chapterNum,
-		"UserIntent":   userIntent,
-	}
-	rendered, err := prompt.GetRegistry().Render("outliner", data)
+	messages, options, err := a.buildOutlineRequest(
+		worldConfig, characters, storyOutline, chapterTitle, allTitles, currentState, prevSummary, chapterNum, userIntent,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to render outliner prompt: %w", err)
-	}
-
-	messages := []core.Message{
-		{Role: core.RoleUser, Content: rendered},
-	}
-
-	options := core.Options{
-		Model:       "",
-		Temperature: 0.7,
+		return nil, err
 	}
 
 	// 2. 调用 LLM
@@ -72,4 +52,97 @@ func (a *OutlinerAgent) GenerateOutline(
 	}
 
 	return &outline, nil
+}
+
+// GenerateOutlineStream 流式生成章节大纲文本（用于 SSE 展示）
+func (a *OutlinerAgent) GenerateOutlineStream(
+	ctx context.Context,
+	worldConfig string,
+	characters string,
+	storyOutline string,
+	chapterTitle string,
+	allTitles string,
+	currentState string,
+	prevSummary string,
+	chapterNum int,
+	userIntent string,
+) (<-chan core.StreamResponse, error) {
+	messages, options, err := a.buildOutlineRequest(
+		worldConfig, characters, storyOutline, chapterTitle, allTitles, currentState, prevSummary, chapterNum, userIntent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	
+	streamResp, err := a.llmProvider.StreamChat(ctx, messages, options)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add filter logic
+	outputChan := make(chan core.StreamResponse)
+	thinkFilter := core.NewThinkTagFilter()
+
+	go func() {
+		defer close(outputChan)
+		for r := range streamResp {
+			if r.Error != "" {
+				outputChan <- core.StreamResponse{Error: r.Error}
+				return
+			}
+			
+			// Process content through filter
+			filteredContent := thinkFilter.Process(r.Content)
+			
+			if filteredContent != "" || r.FinishReason != "" {
+				newResp := r
+				newResp.Content = filteredContent
+				outputChan <- newResp
+			}
+		}
+		if rest := thinkFilter.Flush(); rest != "" {
+			outputChan <- core.StreamResponse{Content: rest}
+		}
+	}()
+
+	return outputChan, nil
+}
+
+func (a *OutlinerAgent) buildOutlineRequest(
+	worldConfig string,
+	characters string,
+	storyOutline string,
+	chapterTitle string,
+	allTitles string,
+	currentState string,
+	prevSummary string,
+	chapterNum int,
+	userIntent string,
+) ([]core.Message, core.Options, error) {
+	// 1. 使用 Registry 渲染动态 Prompt
+	data := map[string]interface{}{
+		"WorldSetting": worldConfig,
+		"Characters":   characters,
+		"StoryOutline": storyOutline,
+		"ChapterTitle": chapterTitle,
+		"AllTitles":    allTitles,
+		"CurrentState": currentState,
+		"PrevSummary":  prevSummary,
+		"ChapterNum":   chapterNum,
+		"UserIntent":   userIntent,
+	}
+	rendered, err := prompt.GetRegistry().Render("outliner", data)
+	if err != nil {
+		return nil, core.Options{}, fmt.Errorf("failed to render outliner prompt: %w", err)
+	}
+
+	messages := []core.Message{
+		{Role: core.RoleUser, Content: rendered},
+	}
+	options := core.Options{
+		Model:       "",
+		Temperature: 0.7,
+		JSONMode:    true,
+	}
+	return messages, options, nil
 }

@@ -31,4 +31,7 @@ type VectorStore interface {
 	
 	// DeleteCollection deletes a collection/index
 	DeleteCollection(ctx context.Context, collectionName string) error
+
+	// DeleteDocuments deletes documents from the vector store based on filter
+	DeleteDocuments(ctx context.Context, collectionName string, filter map[string]interface{}) error
 }

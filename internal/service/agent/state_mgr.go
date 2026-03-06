@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"ai_novel/internal/model"
 	"ai_novel/internal/service/llm/core"
 	"ai_novel/models"
 	"ai_novel/pkg/prompt"
@@ -56,7 +55,8 @@ func (a *StateAgent) ExtractDynamicStateChanges(ctx context.Context, worldSummar
 	return result, nil
 }
 
-// AnalyzeAndSyncState 分析文本并同步数据库状态
+/*
+// AnalyzeAndSyncState 分析文本并同步数据库状态 (Deprecated: Use ExtractDynamicStateChanges instead)
 func (a *StateAgent) AnalyzeAndSyncState(ctx context.Context, currentJSON string, chapterContent string) (string, error) {
 	// 1. 构造 Prompt
 	data := map[string]string{
@@ -98,6 +98,10 @@ func (a *StateAgent) AnalyzeAndSyncState(ctx context.Context, currentJSON string
 // mergeState 将变动应用到原始 JSON 字符串中，返回新的完整 JSON
 func (a *StateAgent) mergeState(oldJSON string, update model.StateUpdate) (string, error) {
 	var character model.Character
+	// This logic is likely broken or incomplete, so commenting out.
+	return oldJSON, nil
+}
+
 	if err := json.Unmarshal([]byte(oldJSON), &character); err != nil {
 		return "", fmt.Errorf("failed to unmarshal current state: %w", err)
 	}
@@ -147,3 +151,4 @@ func (a *StateAgent) mergeState(oldJSON string, update model.StateUpdate) (strin
 
 	return string(newJSONBytes), nil
 }
+*/

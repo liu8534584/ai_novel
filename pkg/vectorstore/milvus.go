@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
@@ -100,7 +101,7 @@ func (s *MilvusStore) Search(ctx context.Context, collectionName string, vector 
 			if bytes, ok := metadataBytes.([]byte); ok {
 				json.Unmarshal(bytes, &metadata)
 			}
-
+			
 			docs = append(docs, Document{
 				ID:       strconv.FormatInt(result.IDs.(*entity.ColumnInt64).Data()[i], 10),
 				Content:  content,
@@ -109,10 +110,35 @@ func (s *MilvusStore) Search(ctx context.Context, collectionName string, vector 
 			})
 		}
 	}
-
 	return docs, nil
 }
 
 func (s *MilvusStore) DeleteCollection(ctx context.Context, collectionName string) error {
 	return s.client.DropCollection(ctx, collectionName)
+}
+
+func (s *MilvusStore) DeleteDocuments(ctx context.Context, collectionName string, filter map[string]interface{}) error {
+	if len(filter) == 0 {
+		return nil
+	}
+	// Build expression: e.g. metadata["chapter_id"] == 123
+	// Note: Milvus JSON field querying syntax might vary by version.
+	// Assuming standard Milvus 2.3+ JSON support.
+	
+	var exprs []string
+	for k, v := range filter {
+		switch val := v.(type) {
+		case string:
+			exprs = append(exprs, fmt.Sprintf("metadata[\"%s\"] == \"%s\"", k, val))
+		case int, int32, int64, uint, uint32, uint64:
+			exprs = append(exprs, fmt.Sprintf("metadata[\"%s\"] == %d", k, val))
+		case float32, float64:
+			exprs = append(exprs, fmt.Sprintf("metadata[\"%s\"] == %f", k, val))
+		default:
+			// Fallback
+			exprs = append(exprs, fmt.Sprintf("metadata[\"%s\"] == \"%v\"", k, val))
+		}
+	}
+	expr := strings.Join(exprs, " && ")
+	return s.client.Delete(ctx, collectionName, "", expr)
 }

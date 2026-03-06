@@ -2,7 +2,7 @@ package handler
 
 import "github.com/gin-gonic/gin"
 
-func RegisterRoutes(r *gin.Engine, h *NovelHandler, bookHandler *BookHandler, planHandler *PlanHandler, configHandler *ConfigHandler) {
+func RegisterRoutes(r *gin.Engine, h *NovelHandler, bookHandler *BookHandler, planHandler *PlanHandler, configHandler *ConfigHandler, outlineHandler *OutlineHandler) {
 	api := r.Group("/api")
 	{
 		api.GET("/books", bookHandler.ListBooks)
@@ -29,6 +29,12 @@ func RegisterRoutes(r *gin.Engine, h *NovelHandler, bookHandler *BookHandler, pl
 		api.POST("/books/:id/plans/characters", planHandler.GenerateCharacters)
 		api.POST("/books/:id/plans/chapters", planHandler.GenerateChapterTitles)
 		api.POST("/books/:id/plans/chapters/batch", planHandler.GenerateChapterTitlesBatch)
+
+		// 总纲管理 (Master Outline)
+		api.GET("/books/:id/master-outline", outlineHandler.GetMasterOutline)
+		api.POST("/books/:id/master-outline/generate", outlineHandler.GenerateBatch)
+		api.PUT("/books/:id/master-outline/:chapterIndex", outlineHandler.UpdateBlueprint)
+		api.POST("/books/:id/master-outline/:chapterIndex/regenerate", outlineHandler.RegenerateChapter)
 
 		api.POST("/chapters/:id/outline", h.GenerateOutline)
 		api.POST("/chapters/:id/outline/confirm", h.ConfirmOutline)

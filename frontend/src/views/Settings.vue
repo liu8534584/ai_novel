@@ -16,13 +16,17 @@
       <div class="glass-card settings-card">
         <div class="card-header">
           <h2>基础配置</h2>
-          <p>支持 OpenAI / DeepSeek / GLM 等兼容接口。</p>
+          <p>支持 OpenAI / DeepSeek / 阶跃星辰等兼容接口。</p>
         </div>
         <el-form :model="form" label-width="120px">
           <el-form-item label="Provider">
             <el-select v-model="form.provider" placeholder="Select provider" @change="handleProviderChange">
               <el-option label="OpenAI" value="openai" />
               <el-option label="DeepSeek" value="deepseek" />
+              <el-option label="阶跃星辰 (StepFun)" value="stepfun" />
+              <el-option label="LM Studio" value="lmstudio" />
+              <el-option label="Ollama" value="ollama" />
+              <el-option label="Local (Generic)" value="local" />
               <el-option label="GLM" value="glm" />
             </el-select>
           </el-form-item>
@@ -95,6 +99,18 @@ const handleProviderChange = (val: string) => {
   if (val === 'deepseek') {
     form.base_url = 'https://api.deepseek.com'
     form.model = 'deepseek-chat'
+  } else if (val === 'stepfun') {
+    form.base_url = 'https://api.stepfun.com/v1'
+    form.model = 'step-3.5-flash'
+  } else if (val === 'lmstudio') {
+    form.base_url = 'http://localhost:1234/v1'
+    form.model = 'local-model'
+  } else if (val === 'ollama') {
+    form.base_url = 'http://localhost:11434/v1'
+    form.model = 'llama3'
+  } else if (val === 'local') {
+    form.base_url = 'http://localhost:8000/v1'
+    form.model = 'local-model'
   } else if (val === 'glm') {
     form.base_url = 'https://open.bigmodel.cn/api/paas/v4/'
     form.model = 'glm-4.7'

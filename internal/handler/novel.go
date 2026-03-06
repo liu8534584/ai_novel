@@ -3,12 +3,16 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"ai_novel/internal/model"
 	"ai_novel/internal/pkg/sse"
+	"ai_novel/internal/service"
 	"ai_novel/internal/service/agent"
 	svccontext "ai_novel/internal/service/context"
 	"ai_novel/internal/service/llm/core"
@@ -31,9 +35,10 @@ type NovelHandler struct {
 	summarizer     *agent.SummarizerAgent
 	contextManager *svccontext.ContextManager
 	rag            *rag.MemoryRecallService
+	processor      *service.PostWriteProcessor
 }
 
-func NewNovelHandler(db *gorm.DB, director *agent.DirectorAgent, outliner *agent.OutlinerAgent, writer *agent.WriterAgent, state *agent.StateAgent, foresight *agent.ForesightAgent, consistency *agent.ConsistencyAgent, summarizer *agent.SummarizerAgent, ctxMgr *svccontext.ContextManager, ragService *rag.MemoryRecallService) *NovelHandler {
+func NewNovelHandler(db *gorm.DB, director *agent.DirectorAgent, outliner *agent.OutlinerAgent, writer *agent.WriterAgent, state *agent.StateAgent, foresight *agent.ForesightAgent, consistency *agent.ConsistencyAgent, summarizer *agent.SummarizerAgent, ctxMgr *svccontext.ContextManager, ragService *rag.MemoryRecallService, processor *service.PostWriteProcessor) *NovelHandler {
 	return &NovelHandler{
 		db:             db,
 		director:       director,
@@ -45,6 +50,7 @@ func NewNovelHandler(db *gorm.DB, director *agent.DirectorAgent, outliner *agent
 		summarizer:     summarizer,
 		contextManager: ctxMgr,
 		rag:            ragService,
+		processor:      processor,
 	}
 }
 
@@ -142,8 +148,11 @@ func (h *NovelHandler) GenerateOutline(c *gin.Context) {
 	currentStateJSON, _ := json.Marshal(book.CurrentState)
 	ctx := core.WithBookID(c.Request.Context(), book.ID)
 
-	// 2. 调用 Outliner Agent
-	outline, err := h.outliner.GenerateOutline(
+	// 2. 设置 SSE
+	sse.SetHeaders(c.Writer)
+
+	// 3. 调用 Outliner Agent（流式）
+	streamChan, err := h.outliner.GenerateOutlineStream(
 		ctx,
 		book.WorldSetting.Summary,
 		plan.Characters,
@@ -155,24 +164,54 @@ func (h *NovelHandler) GenerateOutline(c *gin.Context) {
 		chapter.Order,
 		chapter.UserIntent,
 	)
-
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate outline: " + err.Error()})
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Failed to generate outline: " + err.Error()})
 		return
 	}
 
-	// 3. 更新章节大纲
+	// 4. 流式输出并收集完整文本
+	fullOutlineText := ""
+	streamErr := ""
+	for chunk := range streamChan {
+		if chunk.Error != "" {
+			streamErr = chunk.Error
+			break
+		}
+		if chunk.Content == "" {
+			continue
+		}
+		sse.SendText(c.Writer, chunk.Content)
+		fullOutlineText += chunk.Content
+		c.Writer.Flush()
+	}
+	if streamErr != "" {
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Outline generation failed: " + streamErr})
+		return
+	}
+	if strings.TrimSpace(fullOutlineText) == "" {
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Outline generation returned empty content"})
+		return
+	}
+
+	// 5. 解析结果并更新章节大纲
+	var outline model.ChapterOutline
+	cleanJSON := core.ParseJSON(fullOutlineText)
+	if err := json.Unmarshal([]byte(cleanJSON), &outline); err != nil {
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Failed to parse outline JSON: " + err.Error()})
+		return
+	}
+
 	outlineJSON, _ := json.Marshal(outline)
 	updates := map[string]interface{}{
 		"outline":              string(outlineJSON),
 		"is_outline_confirmed": false, // 重新生成大纲时，重置确认状态
 	}
 	if err := h.db.Model(&chapter).Updates(updates).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save outline: " + err.Error()})
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Failed to save outline: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, outline)
+	sse.Send(c.Writer, sse.Message{Event: sse.EventEnd, Data: "Outline generation completed"})
 }
 
 // ConfirmOutline 确认章节大纲
@@ -233,222 +272,104 @@ func (h *NovelHandler) WriteChapter(c *gin.Context) {
 	}
 
 	fullContent := ""
-	for textChunk := range streamChan {
-		sse.SendText(c.Writer, textChunk)
-		fullContent += textChunk
+	streamErr := ""
+	for chunk := range streamChan {
+		if chunk.Error != "" {
+			streamErr = chunk.Error
+			break
+		}
+		if chunk.Content == "" {
+			continue
+		}
+		sse.SendText(c.Writer, chunk.Content)
+		fullContent += chunk.Content
 		c.Writer.Flush()
+	}
+	if streamErr != "" {
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Chapter generation failed: " + streamErr})
+		return
+	}
+	if fullContent == "" {
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Chapter generation returned empty content"})
+		return
 	}
 
 	// 4. 更新章节内容并创建版本
 	chapter.Content = fullContent
 	wordCount := len([]rune(fullContent))
 
-	err = h.db.Transaction(func(tx *gorm.DB) error {
-		// 获取最新版本号
-		var lastVersion models.ChapterVersion
-		nextVersionNum := 1
-		if err := tx.Where("chapter_id = ?", chapter.ID).Order("version desc").First(&lastVersion).Error; err == nil {
-			nextVersionNum = lastVersion.Version + 1
-		}
+	const maxVersionRetries = 3
+	for attempt := 0; attempt < maxVersionRetries; attempt++ {
+		err = h.db.Transaction(func(tx *gorm.DB) error {
+			// 获取最新版本号
+			var lastVersion models.ChapterVersion
+			nextVersionNum := 1
+			if err := tx.Where("chapter_id = ?", chapter.ID).Order("version desc").First(&lastVersion).Error; err == nil {
+				nextVersionNum = lastVersion.Version + 1
+			}
 
-		// 创建版本记录
-		version := models.ChapterVersion{
-			ChapterID: chapter.ID,
-			Version:   nextVersionNum,
-			Title:     chapter.Title,
-			Content:   fullContent,
-			WordCount: wordCount,
-		}
-		if err := tx.Create(&version).Error; err != nil {
-			return err
-		}
+			// 创建版本记录（并发下依赖唯一索引兜底）
+			version := models.ChapterVersion{
+				ChapterID: chapter.ID,
+				Version:   nextVersionNum,
+				Title:     chapter.Title,
+				Content:   fullContent,
+				WordCount: wordCount,
+			}
+			if err := tx.Create(&version).Error; err != nil {
+				return err
+			}
 
-		// 更新章节主表
-		if err := tx.Model(&chapter).Updates(map[string]interface{}{
-			"content":         fullContent,
-			"current_version": nextVersionNum,
-		}).Error; err != nil {
-			return err
-		}
+			// 更新章节主表
+			if err := tx.Model(&chapter).Updates(map[string]interface{}{
+				"content":         fullContent,
+				"current_version": nextVersionNum,
+			}).Error; err != nil {
+				return err
+			}
 
-		// 更新书籍的当前状态
-		if err := tx.Model(&models.Book{}).Where("id = ?", chapter.BookID).Update("current_state", models.CurrentState{
-			ChapterIndex: chapter.Order,
-			Summary:      fmt.Sprintf("Completed Chapter %d: %s (Version: %d, Words: %d)", chapter.Order, chapter.Title, nextVersionNum, wordCount),
-		}).Error; err != nil {
-			return err
-		}
+			// 更新书籍的当前状态
+			if err := tx.Model(&models.Book{}).Where("id = ?", chapter.BookID).Update("current_state", models.CurrentState{
+				ChapterIndex: chapter.Order,
+				Summary:      fmt.Sprintf("Completed Chapter %d: %s (Version: %d, Words: %d)", chapter.Order, chapter.Title, nextVersionNum, wordCount),
+			}).Error; err != nil {
+				return err
+			}
 
-		return nil
-	})
+			return nil
+		})
+		if err == nil {
+			break
+		}
+		if !isDuplicateVersionErr(err) {
+			break
+		}
+	}
 
 	if err != nil {
-		fmt.Printf("Failed to update chapter content and version: %v\n", err)
+		sse.Send(c.Writer, sse.Message{Event: sse.EventError, Data: "Failed to persist generated chapter: " + err.Error()})
+		return
 	}
 
-	// 5. 更新角色动态状态 (章节后处理)
-	var book models.Book
-	if err := h.db.Preload("Characters").First(&book, chapter.BookID).Error; err == nil {
-		// 准备基础资料
-		var baseProfiles []string
-		var previousStates []string
-		for _, char := range book.Characters {
-			baseProfiles = append(baseProfiles, fmt.Sprintf("%s: %s (%s)", char.Name, char.Role, char.Description))
-			stateJSON, _ := json.Marshal(char.DynamicState)
-			previousStates = append(previousStates, fmt.Sprintf("%s: %s", char.Name, string(stateJSON)))
-		}
-
-		var events []models.StoryEvent
-		updates, err := h.state.ExtractDynamicStateChanges(
-			ctx,
-			book.WorldSetting.Summary,
-			strings.Join(baseProfiles, "\n"),
-			strings.Join(previousStates, "\n"),
-			fullContent,
-		)
-
-		if err == nil {
-			for _, char := range book.Characters {
-				if update, ok := updates[char.Name]; ok {
-					char.DynamicState = update
-					// 1. 更新当前状态
-					h.db.Model(&char).Update("dynamic_state", char.DynamicState)
-
-					// 2. 记录历史轨迹 (Task 18)
-					stateRecord := models.CharacterStateRecord{
-						CharacterID: char.ID,
-						ChapterID:   uint(chapterID),
-						State:       update,
-					}
-					h.db.Create(&stateRecord)
-				}
-			}
-
-			// 6. 关键事件抽取与伏笔追踪 (Task 19)
-			events, err = h.foresight.ExtractEvents(ctx, fullContent)
-			if err == nil {
-				// 1. 持久化 StoryEvent 记录 (Task 19)
-				for i := range events {
-					events[i].BookID = chapter.BookID
-					events[i].ChapterID = uint(chapterID)
-					events[i].ChapterIndex = chapter.Order
-					h.db.Create(&events[i])
-				}
-
-				// 2. 准备状态变化的 JSON 用于伏笔回收判断
-				updatesJSON, _ := json.Marshal(updates)
-				h.foresight.UpdateForeshadowing(ctx, chapter.BookID, uint(chapterID), chapter.Order, fullContent, events, string(updatesJSON))
-			}
-
-			// 7. OOC 评分 (章节后处理)
-			for _, char := range book.Characters {
-				if update, ok := updates[char.Name]; ok {
-					// 获取性格锚点
-					var anchor models.CharacterAnchor
-					if err := h.db.Where("character_id = ?", char.ID).First(&anchor).Error; err != nil {
-						// 如果没有锚点，则尝试提取初始锚点
-						newAnchor, err := h.consistency.ExtractCharacterAnchor(ctx, &char, "")
-						if err == nil {
-							anchor = *newAnchor
-							h.db.Create(&anchor)
-						}
-					}
-
-					if anchor.ID != 0 {
-						// 准备行为描述
-						behavior := fmt.Sprintf("目标: %s\n行为: %s\n情绪: %s", update.Goal, update.KeyActions, update.EmotionalState)
-						// 评估 OOC
-						score, err := h.consistency.EvaluateOOC(ctx, &anchor, "", behavior)
-						if err == nil {
-							score.ChapterID = uint(chapterID)
-							h.db.Create(score)
-						}
-					}
-				}
-			}
-		}
-
-		// 8. 剧情矛盾检测 (章节后处理)
-		// 使用 RAG 召回历史事实 (Task 23)
-		recallQuery := fmt.Sprintf("分析当前章节内容是否存在与历史事实冲突: %s", chapter.Title)
-		historyMemory, err := h.rag.Recall(c.Request.Context(), book.ID, recallQuery, 10, "")
-		if err != nil {
-			fmt.Printf("Warning: failed to recall history memory: %v\n", err)
-			historyMemory = "无法召回历史记忆"
-		}
-
-		contradictions, err := h.consistency.DetectContradictions(
-			c.Request.Context(),
-			book.WorldSetting.Rules,
-			historyMemory,
-			strings.Join(previousStates, "\n"),
-			fullContent,
-		)
-		if err == nil {
-			for _, con := range contradictions {
-				con.BookID = book.ID
-				con.ChapterID = uint(chapterID)
-				h.db.Create(&con)
-			}
-		}
-
-		// 9. 综合健康度评分 (Task 25)
-		// 获取 OOC 评分
-		var oocScores []models.OOCScore
-		h.db.Where("chapter_id = ?", chapterID).Find(&oocScores)
-
-		// 获取伏笔状态 (open 和本章回收的)
-		var openForeshadows []models.Foreshadowing
-		h.db.Where("book_id = ? AND status = ?", book.ID, "open").Find(&openForeshadows)
-
-		var resolvedForeshadows []models.Foreshadowing
-		h.db.Where("book_id = ? AND status = ? AND resolved_chapter_index = ?", book.ID, "resolved", chapter.Order).Find(&resolvedForeshadows)
-
-		healthScore := h.consistency.EvaluateChapterHealth(c.Request.Context(), oocScores, contradictions, openForeshadows, resolvedForeshadows)
-		healthScore.BookID = book.ID
-		healthScore.ChapterID = uint(chapterID)
-		h.db.Create(healthScore)
-
-		// 10. 异步向量化分类入库 (Task 21 + 状态写回)
-		go func(bID, cID uint, title, content string, evs []models.StoryEvent, states map[string]models.CharacterDynamicState) {
-			ctx := context.Background()
-			
-			// A. 生成本章摘要 (状态写回)
-			summary, err := h.summarizer.SummarizeChapter(ctx, title, content)
-			if err == nil {
-				// 将摘要存入历史库，作为更精简的记忆
-				h.rag.IndexChapter(ctx, bID, cID, title, "[章节摘要] "+summary)
-			}
-
-			// B. 章节正文分段向量化
-			if err := h.rag.IndexChapter(ctx, bID, cID, title, content); err != nil {
-				fmt.Printf("Warning: failed to index chapter: %v\n", err)
-			}
-			
-			// C. 剧情事件向量化
-			for _, ev := range evs {
-				if err := h.rag.IndexEvent(ctx, bID, cID, ev); err != nil {
-					fmt.Printf("Warning: failed to index event: %v\n", err)
-				}
-			}
-			
-			// D. 角色状态向量化 (人设库更新)
-			for name, state := range states {
-				// 构造详细的角色档案片段
-				charContent := fmt.Sprintf("角色: %s\n最新状态: %s\n当前目标: %s\n性格/情绪: %s\n能力变化: %s", 
-					name, state.IdentityLocation, state.Goal, state.EmotionalState, state.AbilityResourceChanges)
-				
-				if err := h.rag.IndexCharacter(ctx, bID, name, charContent); err != nil {
-					fmt.Printf("Warning: failed to index character state: %v\n", err)
-				}
-				
-				// 保留原有的 SQLite 记录
-				h.rag.IndexCharacterState(ctx, bID, cID, name, state)
-			}
-		}(chapter.BookID, uint(chapterID), chapter.Title, fullContent, events, updates)
-	}
+	// 5. 异步后处理（统一后处理器，包含状态提取/事件/伏笔/OOC/矛盾/健康度/摘要/RAG）
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		h.processor.Process(bgCtx, chapter.BookID, uint(chapterID), chapter.Order, fullContent)
+	}()
 
 	sse.Send(c.Writer, sse.Message{Event: sse.EventEnd, Data: "Chapter generation completed"})
+}
+
+func isDuplicateVersionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate key")
 }
 
 // GetOOCScores 获取章节 OOC 评分

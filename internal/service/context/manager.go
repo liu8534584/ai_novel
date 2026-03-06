@@ -282,7 +282,8 @@ func (m *ContextManager) buildRecentContext(ctx context.Context, bookID uint, cu
 // recallMemories 多路 RAG 召回
 func (m *ContextManager) recallMemories(ctx context.Context, bookID uint, chapterTitle, chapterObjective string) string {
 	query := fmt.Sprintf("%s %s", chapterTitle, chapterObjective)
-	multiMemories, _ := m.rag.MultiRouteRecall(ctx, bookID, query, 5)
+	// 降低召回数量 TopK 从 5 -> 3，防止上下文过长
+	multiMemories, _ := m.rag.MultiRouteRecall(ctx, bookID, query, 3)
 
 	var recallParts []string
 	if items, ok := multiMemories[rag.CollectionCharacters]; ok && len(items) > 0 {
@@ -299,8 +300,15 @@ func (m *ContextManager) recallMemories(ctx context.Context, bookID uint, chapte
 	}
 
 	memories := strings.Join(recallParts, "\n\n")
+	
+	// 简单的长度截断保护 (约 2000 汉字)
+	runes := []rune(memories)
+	if len(runes) > 2000 {
+		memories = string(runes[:2000]) + "\n...(truncated)..."
+	}
+
 	if memories == "" {
-		memories, _ = m.rag.Recall(ctx, bookID, query, 5, "")
+		memories, _ = m.rag.Recall(ctx, bookID, query, 3, "")
 	}
 
 	return memories

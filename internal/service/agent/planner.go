@@ -33,23 +33,10 @@ func (a *PlanAgent) GeneratePlanVersions(ctx context.Context, description string
 	versions := make([]model.OutlineVersion, 0, count)
 
 	for i := 0; i < count; i++ {
-		name := "planner"
-		if i < len(promptNames) {
-			name = promptNames[i]
-		}
-		rendered, err := prompt.GetRegistry().Render(name, data)
+		messages, options, err := a.buildPlanRequest(data, i, promptNames)
 		if err != nil {
-			return nil, fmt.Errorf("failed to render planner prompt: %w", err)
+			return nil, err
 		}
-
-		messages := []core.Message{
-			{Role: core.RoleUser, Content: rendered},
-		}
-
-		options := core.Options{
-			Model: "",
-		}
-		core.GetStrategy(core.TaskPlanning).ApplyToOptions(&options)
 
 		resp, err := a.llmProvider.Chat(ctx, messages, options)
 		if err != nil {
@@ -58,7 +45,7 @@ func (a *PlanAgent) GeneratePlanVersions(ctx context.Context, description string
 
 		versions = append(versions, model.OutlineVersion{
 			WorldView: worldView,
-			Outline:   resp.Content,
+			Outline:   core.RemoveReasoningContent(resp.Content),
 		})
 	}
 
@@ -72,4 +59,72 @@ func (a *PlanAgent) GenerateSinglePlan(ctx context.Context, description, genre, 
 		return "", err
 	}
 	return versions[0].Outline, nil
+}
+
+func (a *PlanAgent) GeneratePlanVersionStream(ctx context.Context, description string, genre string, worldView string, chapters int, idx int) (<-chan core.StreamResponse, error) {
+	data := map[string]interface{}{
+		"WorldView":     worldView,
+		"Description":   description,
+		"Genre":         genre,
+		"Chapters":      chapters,
+		"ChaptersBegin": int(float64(chapters) * 0.2),
+	}
+	promptNames := []string{"planner_dark", "planner_growth", "planner_twist"}
+	messages, options, err := a.buildPlanRequest(data, idx, promptNames)
+	if err != nil {
+		return nil, err
+	}
+	
+	streamResp, err := a.llmProvider.StreamChat(ctx, messages, options)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add filter logic
+	outputChan := make(chan core.StreamResponse)
+	thinkFilter := core.NewThinkTagFilter()
+
+	go func() {
+		defer close(outputChan)
+		for r := range streamResp {
+			if r.Error != "" {
+				outputChan <- core.StreamResponse{Error: r.Error}
+				return
+			}
+			
+			// Process content through filter
+			filteredContent := thinkFilter.Process(r.Content)
+			
+			if filteredContent != "" || r.FinishReason != "" {
+				newResp := r
+				newResp.Content = filteredContent
+				outputChan <- newResp
+			}
+		}
+		if rest := thinkFilter.Flush(); rest != "" {
+			outputChan <- core.StreamResponse{Content: rest}
+		}
+	}()
+
+	return outputChan, nil
+}
+
+func (a *PlanAgent) buildPlanRequest(data map[string]interface{}, idx int, promptNames []string) ([]core.Message, core.Options, error) {
+	name := "planner"
+	if idx < len(promptNames) {
+		name = promptNames[idx]
+	}
+	rendered, err := prompt.GetRegistry().Render(name, data)
+	if err != nil {
+		return nil, core.Options{}, fmt.Errorf("failed to render planner prompt: %w", err)
+	}
+
+	messages := []core.Message{
+		{Role: core.RoleUser, Content: rendered},
+	}
+	options := core.Options{
+		Model: "",
+	}
+	core.GetStrategy(core.TaskPlanning).ApplyToOptions(&options)
+	return messages, options, nil
 }

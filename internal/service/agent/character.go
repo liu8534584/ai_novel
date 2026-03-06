@@ -20,35 +20,24 @@ func NewCharacterAgent(provider core.Provider) *CharacterAgent {
 
 // GenerateCharacters 生成主要角色设定
 func (a *CharacterAgent) GenerateCharacters(ctx context.Context, worldView, outline string) ([]model.Character, error) {
-	data := map[string]interface{}{
-		"WorldView": worldView,
-		"Outline":   outline,
-	}
-	rendered, err := prompt.GetRegistry().Render("character", data)
+	messages, options, err := a.buildCharacterRequest(worldView, outline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to render character prompt: %w", err)
+		return nil, err
 	}
-
-	messages := []core.Message{
-		{Role: core.RoleUser, Content: rendered},
-	}
-
-	options := core.Options{
-		Model:       "",
-		JSONMode:    true,
-		MaxTokens:   4000, // Ensure enough tokens for multiple characters with descriptions
-		Temperature: 0.7,
-	}
-	core.GetStrategy(core.TaskCharacterDesign).ApplyToOptions(&options)
 
 	resp, err := a.llmProvider.Chat(ctx, messages, options)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
-	content := resp.Content
+	// Filter think tags
+	thinkFilter := core.NewThinkTagFilter()
+	cleanContent := thinkFilter.Process(resp.Content)
+	cleanContent += thinkFilter.Flush()
+	
+	content := core.ParseJSON(cleanContent)
 	if content == "" {
-		return nil, fmt.Errorf("LLM returned empty content. Check your model configuration and prompt.")
+		return nil, fmt.Errorf("failed to extract valid JSON from LLM output. Output was: %s", resp.Content)
 	}
 
 	var characters []model.Character
@@ -82,4 +71,78 @@ func (a *CharacterAgent) GenerateCharacters(ctx context.Context, worldView, outl
 	}
 
 	return characters, nil
+}
+
+func (a *CharacterAgent) GenerateCharactersStream(ctx context.Context, worldView, outline string) (<-chan core.StreamResponse, error) {
+	messages, options, err := a.buildCharacterRequest(worldView, outline)
+	if err != nil {
+		return nil, err
+	}
+	
+	streamResp, err := a.llmProvider.StreamChat(ctx, messages, options)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add filter logic
+	outputChan := make(chan core.StreamResponse)
+	thinkFilter := core.NewThinkTagFilter()
+
+	go func() {
+		defer close(outputChan)
+		for r := range streamResp {
+			if r.Error != "" {
+				select {
+				case outputChan <- core.StreamResponse{Error: r.Error}:
+				case <-ctx.Done():
+				}
+				return
+			}
+
+			// Process content through filter
+			filteredContent := thinkFilter.Process(r.Content)
+
+			if filteredContent != "" || r.FinishReason != "" {
+				newResp := r
+				newResp.Content = filteredContent
+				select {
+				case outputChan <- newResp:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if rest := thinkFilter.Flush(); rest != "" {
+			select {
+			case outputChan <- core.StreamResponse{Content: rest}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return outputChan, nil
+}
+
+func (a *CharacterAgent) buildCharacterRequest(worldView, outline string) ([]core.Message, core.Options, error) {
+	data := map[string]interface{}{
+		"WorldView": worldView,
+		"Outline":   outline,
+	}
+	rendered, err := prompt.GetRegistry().Render("character", data)
+	if err != nil {
+		return nil, core.Options{}, fmt.Errorf("failed to render character prompt: %w", err)
+	}
+
+	messages := []core.Message{
+		{Role: core.RoleUser, Content: rendered},
+	}
+
+	options := core.Options{
+		Model:       "",
+		JSONMode:    true,
+		MaxTokens:   8192, // Increased from 4000 to handle potential long thinking process + JSON
+		Temperature: 0.7,
+	}
+	core.GetStrategy(core.TaskCharacterDesign).ApplyToOptions(&options)
+	return messages, options, nil
 }

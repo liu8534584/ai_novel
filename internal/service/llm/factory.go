@@ -27,7 +27,7 @@ func (p *ErrorProvider) CreateEmbedding(ctx context.Context, input string, optio
 
 // NewProvider creates a specific provider based on the given configuration.
 func NewProvider(providerName, apiKey, baseURL string) core.Provider {
-	if apiKey == "" {
+	if apiKey == "" && providerName != "lmstudio" && providerName != "ollama" && providerName != "local" {
 		return &ErrorProvider{Err: errors.New("LLM API Key not configured")}
 	}
 
@@ -36,8 +36,9 @@ func NewProvider(providerName, apiKey, baseURL string) core.Provider {
 		return openai.NewOpenAIProvider(apiKey, baseURL)
 	case "deepseek":
 		return deepseek.NewDeepSeekProvider(apiKey, baseURL)
-	case "glm", "zhipu", "aliyun", "siliconflow":
+	case "glm", "zhipu", "aliyun", "siliconflow", "local", "lmstudio", "ollama", "stepfun", "step":
 		// These providers are often OpenAI compatible
+		// For local providers (lmstudio, ollama), apiKey can be anything if not required, but baseURL is mandatory
 		return openai.NewOpenAIProvider(apiKey, baseURL)
 	default:
 		// If unknown but we have key/baseURL, try OpenAI compatible

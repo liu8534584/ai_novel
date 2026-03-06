@@ -40,9 +40,20 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []core.Message, opti
 	}
 
 	if options.JSONMode {
+		// LM Studio / Local models often have issues with "json_object"
+		// If the error is: 'response_format.type' must be 'json_schema' or 'text'
+		// It means the provider doesn't support the standard 'json_object' yet.
+		// For maximum compatibility with local providers, we fallback to 'text' 
+		// and rely on our ParseJSON utility to extract the JSON.
+		
+		// If you are using a provider that specifically requires json_object (like GPT-4), 
+		// you might want this enabled. But for local/LM Studio, disabling it is safer.
+		
+		/*
 		req.ResponseFormat = &goopenai.ChatCompletionResponseFormat{
 			Type: goopenai.ChatCompletionResponseFormatTypeJSONObject,
 		}
+		*/
 	}
 
 	resp, err := p.client.CreateChatCompletion(ctx, req)
@@ -55,7 +66,10 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []core.Message, opti
 	}
 
 	choice := resp.Choices[0]
-	
+
+	// Remove <think>...</think> content for DeepSeek/Local models running via OpenAI adapter
+	content := core.RemoveReasoningContent(choice.Message.Content)
+
 	// Convert tool calls
 	var toolCalls []core.ToolCall
 	for _, tc := range choice.Message.ToolCalls {
@@ -73,7 +87,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []core.Message, opti
 	}
 
 	return core.Response{
-		Content: choice.Message.Content,
+		Content: content,
 		Role:    core.Role(choice.Message.Role),
 		Usage: core.Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
@@ -101,6 +115,15 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []core.Message
 		MaxTokens:   options.MaxTokens,
 		Stream:      true,
 	}
+	if options.JSONMode {
+		// LM Studio / Local models often have issues with "json_object"
+		// See comment in Chat() above.
+		/*
+		req.ResponseFormat = &goopenai.ChatCompletionResponseFormat{
+			Type: goopenai.ChatCompletionResponseFormatTypeJSONObject,
+		}
+		*/
+	}
 
 	stream, err := p.client.CreateChatCompletionStream(ctx, req)
 	if err != nil {
@@ -112,19 +135,31 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, messages []core.Message
 	go func() {
 		defer close(outputChan)
 		defer stream.Close()
+		thinkFilter := core.NewThinkTagFilter()
 
 		for {
 			response, err := stream.Recv()
 			if errors.Is(err, io.EOF) {
+				if rest := thinkFilter.Flush(); rest != "" {
+					select {
+					case outputChan <- core.StreamResponse{Content: rest}:
+					case <-ctx.Done():
+					}
+				}
 				return
 			}
 			if err != nil {
+				select {
+				case outputChan <- core.StreamResponse{Error: err.Error()}:
+				case <-ctx.Done():
+				}
 				return
 			}
 
 			if len(response.Choices) > 0 {
 				choice := response.Choices[0]
-				content := choice.Delta.Content
+				content := thinkFilter.Process(choice.Delta.Content)
+
 				if content != "" || choice.FinishReason != "" {
 					select {
 					case outputChan <- core.StreamResponse{

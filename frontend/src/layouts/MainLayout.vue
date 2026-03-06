@@ -22,6 +22,14 @@
           <span>规划生成</span>
         </router-link>
         <router-link
+          to="/outline"
+          class="nav-item"
+          :class="{ active: $route.path.startsWith('/outline') }"
+        >
+          <el-icon><List /></el-icon>
+          <span>总纲管理</span>
+        </router-link>
+        <router-link
           to="/prompts"
           class="nav-item"
           :class="{ active: $route.path.startsWith('/prompts') }"
@@ -68,7 +76,7 @@
 </template>
 
 <script setup lang="ts">
-import { Document, House, Notebook, Setting } from '@element-plus/icons-vue'
+import { Document, House, List, Notebook, Setting } from '@element-plus/icons-vue'
 </script>
 
 <style scoped>

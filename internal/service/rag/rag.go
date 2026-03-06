@@ -101,6 +101,32 @@ func (s *MemoryRecallService) IndexChapter(ctx context.Context, bookID uint, cha
 	return nil
 }
 
+// DeleteChapterIndex 删除指定章节的所有向量索引
+func (s *MemoryRecallService) DeleteChapterIndex(ctx context.Context, bookID uint, chapterID uint) error {
+	// 1. 从本地数据库删除 (其实已经在 PostWriteProcessor 中清理了，这里为了完整性可以再调一次，或者略过)
+	// 但考虑到 VectorRecord 是由 RAG 管理的，这里显式删除更合适。
+	if err := s.db.Where("book_id = ? AND chapter_id = ?", bookID, chapterID).Delete(&models.VectorRecord{}).Error; err != nil {
+		return err
+	}
+
+	// 2. 从远程向量库删除 (如果存在)
+	if s.vectorStore != nil {
+		filter := map[string]interface{}{
+			"book_id":    bookID,
+			"chapter_id": chapterID,
+		}
+		// 需要遍历所有可能的 Collection 进行清理
+		collections := []string{CollectionHistory, CollectionCharacters, CollectionOutlines, CollectionWorldRules}
+		for _, col := range collections {
+			// 只有 history 和 characters 可能包含 specific chapter 的数据
+			// outlines 和 world_rules 通常是全局的，或者是按 stage 划分的
+			// 但如果有 chapter_id 字段，也可以清理
+			s.vectorStore.DeleteDocuments(ctx, col, filter)
+		}
+	}
+	return nil
+}
+
 // IndexWorldRule 将世界观规则入库
 func (s *MemoryRecallService) IndexWorldRule(ctx context.Context, bookID uint, content string) error {
 	embedding, err := s.llmProvider.CreateEmbedding(ctx, content, core.Options{})
@@ -266,12 +292,29 @@ func (s *MemoryRecallService) IndexCharacterState(ctx context.Context, bookID ui
 	return s.db.Create(&record).Error
 }
 
-// Recall 相关记忆召回
+// Recall 相关记忆召回 (兼容旧接口，返回 string)
 func (s *MemoryRecallService) Recall(ctx context.Context, bookID uint, query string, topK int, category string) (string, error) {
+	records, err := s.recallRecords(ctx, bookID, query, topK, category)
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "无相关历史记忆", nil
+	}
+	// 拼接时增加 Category 标识
+	var formatted []string
+	for _, r := range records {
+		formatted = append(formatted, fmt.Sprintf("[%s] %s", r.Category, r.Content))
+	}
+	return strings.Join(formatted, "\n---\n"), nil
+}
+
+// recallRecords 内部实现：返回 []models.VectorRecord
+func (s *MemoryRecallService) recallRecords(ctx context.Context, bookID uint, query string, topK int, category string) ([]models.VectorRecord, error) {
 	// 获取查询向量
 	queryEmb, err := s.llmProvider.CreateEmbedding(ctx, query, core.Options{})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	// 从数据库中获取所有符合条件的记录
@@ -281,11 +324,11 @@ func (s *MemoryRecallService) Recall(ctx context.Context, bookID uint, query str
 		queryBuilder = queryBuilder.Where("category = ?", category)
 	}
 	if err := queryBuilder.Find(&records).Error; err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if len(records) == 0 {
-		return "无相关历史记忆", nil
+		return nil, nil
 	}
 
 	// 计算余弦相似度并排序
@@ -315,20 +358,33 @@ func (s *MemoryRecallService) Recall(ctx context.Context, bookID uint, query str
 		limit = len(scored)
 	}
 
-	var results []string
+	var results []models.VectorRecord
 	for i := 0; i < limit; i++ {
-		results = append(results, fmt.Sprintf("[%s] %s", scored[i].record.Category, scored[i].record.Content))
+		results = append(results, scored[i].record)
 	}
 
-	return strings.Join(results, "\n---\n"), nil
+	return results, nil
 }
 
 // MultiRouteRecall 多路召回：同时搜索角色、历史、大纲库
 func (s *MemoryRecallService) MultiRouteRecall(ctx context.Context, bookID uint, query string, topK int) (map[string][]string, error) {
 	if s.vectorStore == nil {
-		// 回退到原有的 SQLite 搜索
-		res, err := s.Recall(ctx, bookID, query, topK, "")
-		return map[string][]string{"all": {res}}, err
+		// 回退到原有的 SQLite 搜索，但模拟分类返回
+		results := make(map[string][]string)
+		collections := []string{CollectionCharacters, CollectionHistory, CollectionOutlines, CollectionWorldRules}
+		
+		for _, col := range collections {
+			// 调用内部逻辑 recallRecords
+			records, err := s.recallRecords(ctx, bookID, query, topK, col)
+			if err == nil && len(records) > 0 {
+				var items []string
+				for _, r := range records {
+					items = append(items, r.Content)
+				}
+				results[col] = items
+			}
+		}
+		return results, nil
 	}
 
 	queryEmb, err := s.llmProvider.CreateEmbedding(ctx, query, core.Options{})

@@ -139,7 +139,7 @@
             </template>
             <template v-else>
               <el-button v-if="!plan.is_locked" type="success" @click="confirmPlan(plan)">确定使用（锁定后不可更改）</el-button>
-              <el-button v-else type="info" plain disabled>方案已锁定</el-button>
+              <el-button v-else type="info" plain @click="unlockPlan(plan)">方案已锁定 (点击解锁)</el-button>
             </template>
           </div>
         </div>
@@ -203,6 +203,78 @@ const form = reactive({
 })
 
 const currentBook = computed(() => books.value.find((item) => item.id === selectedBookId.value) || null)
+
+const streamPostSSE = async (
+  url: string,
+  body: Record<string, any> | null,
+  onMessage: (text: string) => void,
+  onStateUpdate?: (payload: any) => void
+) => {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  })
+
+  if (!response.ok) {
+    let errorMsg = `请求失败 (${response.status})`
+    try {
+      const payload = await response.json()
+      if (payload?.error) errorMsg = payload.error
+    } catch {
+      const text = await response.text()
+      if (text) errorMsg = text
+    }
+    throw new Error(errorMsg)
+  }
+
+  if (!response.body) {
+    throw new Error('无流式响应')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmedLine = line.trim()
+      if (!trimmedLine) continue
+
+      if (trimmedLine.startsWith('event:')) {
+        currentEvent = trimmedLine.slice(6).trim()
+      } else if (trimmedLine.startsWith('data:')) {
+        const dataStr = trimmedLine.slice(5).trim()
+        let data: any = dataStr
+        try {
+          data = JSON.parse(dataStr)
+        } catch {
+          data = dataStr
+        }
+
+        if (currentEvent === 'message') {
+          onMessage(String(data))
+        } else if (currentEvent === 'state_update') {
+          onStateUpdate?.(data)
+        } else if (currentEvent === 'error') {
+          throw new Error(String(data))
+        } else if (currentEvent === 'end') {
+          return
+        }
+      }
+    }
+  }
+}
 
 const fetchBooks = async () => {
   try {
@@ -268,17 +340,70 @@ const generatePlans = async () => {
     return
   }
   loading.value = true
+  const versionCount = form.count > 0 ? form.count : 3
+  plans.value = Array.from({ length: versionCount }).map((_, idx) => ({
+    id: -(idx + 1),
+    world_view: '',
+    outline: '',
+    characters: '',
+    titles: '',
+    is_selected: false,
+    is_locked: false
+  }))
+  let currentVersionIndex = 0
+  let currentPhase = ''
+
   try {
-    const res = await axios.post(`/api/books/${selectedBookId.value}/plans/generate`, {
-      description: form.description,
-      genre: form.genre,
-      chapters: form.chapters,
-      count: form.count
-    })
-    plans.value = res.data.data || []
+    await streamPostSSE(
+      `/api/books/${selectedBookId.value}/plans/generate`,
+      {
+        description: form.description,
+        genre: form.genre,
+        chapters: form.chapters,
+        count: form.count
+      },
+      (text) => {
+        if (currentPhase === 'world_start') {
+          plans.value.forEach(p => {
+            if (p) p.world_view += text
+          })
+          return
+        }
+        
+        const currentPlan = plans.value[currentVersionIndex]
+        if (!currentPlan) return
+        currentPlan.outline += text
+      },
+      (payload) => {
+        if (payload?.phase) {
+          currentPhase = payload.phase
+        }
+        if (payload?.phase === 'plan_version_start' && typeof payload.index === 'number') {
+          currentVersionIndex = Math.max(0, payload.index - 1)
+          const currentPlan = plans.value[currentVersionIndex]
+          if (!currentPlan) {
+            plans.value[currentVersionIndex] = {
+              id: -(currentVersionIndex + 1),
+              world_view: plans.value[0]?.world_view || '',
+              outline: '',
+              characters: '',
+              titles: '',
+              is_selected: false,
+              is_locked: false
+            }
+          } else {
+            const worldView = plans.value[0]?.world_view || ''
+            if (worldView && !currentPlan.world_view) {
+              currentPlan.world_view = worldView
+            }
+          }
+        }
+      }
+    )
+    await loadPlans()
     ElMessage.success('规划生成完成')
   } catch (error) {
-    ElMessage.error('规划生成失败')
+    ElMessage.error(error instanceof Error ? error.message : '规划生成失败')
   } finally {
     loading.value = false
   }
@@ -306,16 +431,37 @@ const confirmPlan = async (plan: PlanVersion) => {
   }
 }
 
+const unlockPlan = async (plan: PlanVersion) => {
+  if (!selectedBookId.value) return
+  try {
+    await axios.put(`/api/books/${selectedBookId.value}/plans/${plan.id}/lock`, { locked: false })
+    plan.is_locked = false
+    ElMessage.success('方案已解锁')
+  } catch (error) {
+    ElMessage.error('解锁方案失败')
+  }
+}
+
 const generateCharacters = async (plan: PlanVersion) => {
   if (!selectedBookId.value) return
   generatingCharacters.value = true
+  plan.characters = ''
   try {
-    const res = await axios.post(`/api/books/${selectedBookId.value}/plans/characters`)
-    plan.characters = res.data.data.characters
+    await streamPostSSE(
+      `/api/books/${selectedBookId.value}/plans/characters`,
+      null,
+      (text) => {
+        if (typeof plan.characters !== 'string') {
+          plan.characters = ''
+        }
+        plan.characters += text
+      }
+    )
+    await loadPlans()
     await fetchCharacters() // 刷新角色列表
     ElMessage.success('角色设定生成完成')
   } catch (error) {
-    ElMessage.error('角色设定生成失败')
+    ElMessage.error(error instanceof Error ? error.message : '角色设定生成失败')
   } finally {
     generatingCharacters.value = false
   }
@@ -324,12 +470,19 @@ const generateCharacters = async (plan: PlanVersion) => {
 const generateChapters = async (plan: PlanVersion) => {
   if (!selectedBookId.value) return
   generatingChapters.value = true
+  plan.titles = ''
   try {
-    const res = await axios.post(`/api/books/${selectedBookId.value}/plans/chapters`)
-    plan.titles = res.data.data.titles
+    await streamPostSSE(
+      `/api/books/${selectedBookId.value}/plans/chapters`,
+      null,
+      (text) => {
+        plan.titles += text
+      }
+    )
+    await loadPlans()
     ElMessage.success('章节标题生成完成')
   } catch (error) {
-    ElMessage.error('章节标题生成失败')
+    ElMessage.error(error instanceof Error ? error.message : '章节标题生成失败')
   } finally {
     generatingChapters.value = false
   }

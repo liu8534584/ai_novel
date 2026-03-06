@@ -51,14 +51,15 @@ type Usage struct {
 }
 
 type Response struct {
-	Content      string    `json:"content"`
-	Role         Role      `json:"role"`
-	Usage        Usage     `json:"usage"`
-	FinishReason string    `json:"finish_reason"`
+	Content      string     `json:"content"`
+	Role         Role       `json:"role"`
+	Usage        Usage      `json:"usage"`
+	FinishReason string     `json:"finish_reason"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type StreamResponse struct {
 	Content      string `json:"content"`
 	FinishReason string `json:"finish_reason"`
+	Error        string `json:"error,omitempty"`
 }

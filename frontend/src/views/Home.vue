@@ -158,9 +158,13 @@
 
         <el-divider content-position="left">模型配置 (LLM)</el-divider>
         <el-form-item label="Provider">
-          <el-select v-model="form.llm_config.provider" placeholder="选择提供商" @change="handleProviderChange">
+          <el-select v-model="form.llm_config.provider" placeholder="选择模型供应商" @change="handleProviderChange">
             <el-option label="OpenAI" value="openai" />
             <el-option label="DeepSeek" value="deepseek" />
+            <el-option label="阶跃星辰 (StepFun)" value="stepfun" />
+            <el-option label="LM Studio" value="lmstudio" />
+            <el-option label="Ollama" value="ollama" />
+            <el-option label="Local (Generic)" value="local" />
             <el-option label="GLM" value="glm" />
           </el-select>
         </el-form-item>
@@ -495,6 +499,18 @@ const handleProviderChange = (val: string) => {
   if (val === 'deepseek') {
     form.llm_config.base_url = 'https://api.deepseek.com'
     form.llm_config.model = 'deepseek-chat'
+  } else if (val === 'stepfun') {
+    form.llm_config.base_url = 'https://api.stepfun.com/v1'
+    form.llm_config.model = 'step-3.5-flash'
+  } else if (val === 'lmstudio') {
+    form.llm_config.base_url = 'http://localhost:1234/v1'
+    form.llm_config.model = 'local-model'
+  } else if (val === 'ollama') {
+    form.llm_config.base_url = 'http://localhost:11434/v1'
+    form.llm_config.model = 'llama3'
+  } else if (val === 'local') {
+    form.llm_config.base_url = 'http://localhost:8000/v1'
+    form.llm_config.model = 'local-model'
   } else if (val === 'glm') {
     form.llm_config.base_url = 'https://open.bigmodel.cn/api/paas/v4/'
     form.llm_config.model = 'glm-4.7'

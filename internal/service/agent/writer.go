@@ -61,11 +61,11 @@ func (a *WriterAgent) GenerateChapterObjective(ctx context.Context, outlineSumma
 	if err != nil {
 		return "", err
 	}
-	return resp.Content, nil
+	return core.RemoveReasoningContent(resp.Content), nil
 }
 
 // WriteChapterStream 使用分层上下文流式生成正文
-func (a *WriterAgent) WriteChapterStream(ctx context.Context, wCtx WriterContext) (<-chan string, error) {
+func (a *WriterAgent) WriteChapterStream(ctx context.Context, wCtx WriterContext) (<-chan core.StreamResponse, error) {
 	rendered, err := prompt.GetRegistry().Render("writer_layered", wCtx)
 	if err != nil {
 		return nil, err
@@ -77,8 +77,8 @@ func (a *WriterAgent) WriteChapterStream(ctx context.Context, wCtx WriterContext
 
 	options := core.Options{
 		Model:       "",
-		Temperature: 0.9,   // 写作需要较高的创意度
-		MaxTokens:   4000,  // 增加 MaxTokens 以支持长章节生成
+		Temperature: 0.9,  // 写作需要较高的创意度
+		MaxTokens:   4000, // 增加 MaxTokens 以支持长章节生成
 	}
 	core.GetStrategy(core.TaskWriting).ApplyToOptions(&options)
 
@@ -87,13 +87,31 @@ func (a *WriterAgent) WriteChapterStream(ctx context.Context, wCtx WriterContext
 		return nil, err
 	}
 
-	outputChan := make(chan string)
+	outputChan := make(chan core.StreamResponse)
+	
+	// Create a filter for this stream session
+	thinkFilter := core.NewThinkTagFilter()
+
 	go func() {
 		defer close(outputChan)
 		for r := range streamResp {
-			if r.Content != "" {
-				outputChan <- r.Content
+			if r.Error != "" {
+				outputChan <- core.StreamResponse{Error: r.Error}
+				return
 			}
+			
+			// Process content through filter
+			filteredContent := thinkFilter.Process(r.Content)
+			
+			if filteredContent != "" || r.FinishReason != "" {
+				// Create new response with filtered content
+				newResp := r
+				newResp.Content = filteredContent
+				outputChan <- newResp
+			}
+		}
+		if rest := thinkFilter.Flush(); rest != "" {
+			outputChan <- core.StreamResponse{Content: rest}
 		}
 	}()
 

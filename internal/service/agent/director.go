@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -56,8 +57,66 @@ func (a *DirectorAgent) InitWorld(ctx context.Context, description, genre string
 
 	// 3. 返回结构化文本内容
 	return &model.WorldConfig{
-		Content: resp.Content,
+		Content: core.RemoveReasoningContent(resp.Content),
 	}, nil
+}
+
+// InitWorldStream 根据灵感流式生成世界观文档
+func (a *DirectorAgent) InitWorldStream(ctx context.Context, description, genre string, chapters int) (<-chan core.StreamResponse, error) {
+	// 1. 使用 Registry 渲染动态 Prompt
+	data := map[string]interface{}{
+		"Description": description,
+		"Genre":       genre,
+		"Chapters":    chapters,
+	}
+	rendered, err := prompt.GetRegistry().Render("director", data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render director prompt: %w", err)
+	}
+
+	messages := []core.Message{
+		{Role: core.RoleUser, Content: rendered},
+	}
+
+	options := core.Options{
+		Model:    "",
+		JSONMode: false,
+	}
+	core.GetStrategy(core.TaskWorldBuilding).ApplyToOptions(&options)
+
+	// 2. 调用 LLM Stream
+	streamResp, err := a.llmProvider.StreamChat(ctx, messages, options)
+	if err != nil {
+		return nil, fmt.Errorf("LLM stream call failed: %w", err)
+	}
+
+	// Add filter logic
+	outputChan := make(chan core.StreamResponse)
+	thinkFilter := core.NewThinkTagFilter()
+
+	go func() {
+		defer close(outputChan)
+		for r := range streamResp {
+			if r.Error != "" {
+				outputChan <- core.StreamResponse{Error: r.Error}
+				return
+			}
+			
+			// Process content through filter
+			filteredContent := thinkFilter.Process(r.Content)
+			
+			if filteredContent != "" || r.FinishReason != "" {
+				newResp := r
+				newResp.Content = filteredContent
+				outputChan <- newResp
+			}
+		}
+		if rest := thinkFilter.Flush(); rest != "" {
+			outputChan <- core.StreamResponse{Content: rest}
+		}
+	}()
+
+	return outputChan, nil
 }
 
 // ChatForInspiration 与 LLM 进行灵感头脑风暴
@@ -542,49 +601,70 @@ func (a *DirectorAgent) PostProcessChapter(
 func (a *DirectorAgent) persistChapterContent(bookID, chapterID uint, chapterIndex int, fullContent string) {
 	wordCount := len([]rune(fullContent))
 
-	err := a.db.Transaction(func(tx *gorm.DB) error {
-		// 获取最新版本号
-		var lastVersion models.ChapterVersion
-		nextVersionNum := 1
-		if err := tx.Where("chapter_id = ?", chapterID).Order("version desc").First(&lastVersion).Error; err == nil {
-			nextVersionNum = lastVersion.Version + 1
-		}
+	var err error
+	const maxVersionRetries = 3
+	for attempt := 0; attempt < maxVersionRetries; attempt++ {
+		err = a.db.Transaction(func(tx *gorm.DB) error {
+			// 获取最新版本号
+			var lastVersion models.ChapterVersion
+			nextVersionNum := 1
+			if err := tx.Where("chapter_id = ?", chapterID).Order("version desc").First(&lastVersion).Error; err == nil {
+				nextVersionNum = lastVersion.Version + 1
+			}
 
-		// 创建版本记录
-		version := models.ChapterVersion{
-			ChapterID: chapterID,
-			Version:   nextVersionNum,
-			Content:   fullContent,
-			WordCount: wordCount,
-		}
-		if err := tx.Create(&version).Error; err != nil {
-			return err
-		}
+			// 创建版本记录（并发下依赖唯一索引兜底）
+			version := models.ChapterVersion{
+				ChapterID: chapterID,
+				Version:   nextVersionNum,
+				Content:   fullContent,
+				WordCount: wordCount,
+			}
+			if err := tx.Create(&version).Error; err != nil {
+				return err
+			}
 
-		// 更新章节主表
-		if err := tx.Model(&models.Chapter{}).Where("id = ?", chapterID).Updates(map[string]interface{}{
-			"content":         fullContent,
-			"current_version": nextVersionNum,
-		}).Error; err != nil {
-			return err
-		}
+			// 更新章节主表
+			if err := tx.Model(&models.Chapter{}).Where("id = ?", chapterID).Updates(map[string]interface{}{
+				"content":         fullContent,
+				"current_version": nextVersionNum,
+			}).Error; err != nil {
+				return err
+			}
 
-		// 更新书籍当前状态
-		if err := tx.Model(&models.Book{}).Where("id = ?", bookID).Update("current_state", models.CurrentState{
-			ChapterIndex: chapterIndex,
-			Summary:      fmt.Sprintf("Pipeline completed Chapter %d (Version: %d, Words: %d)", chapterIndex, nextVersionNum, wordCount),
-		}).Error; err != nil {
-			return err
-		}
+			// 更新书籍当前状态
+			if err := tx.Model(&models.Book{}).Where("id = ?", bookID).Update("current_state", models.CurrentState{
+				ChapterIndex: chapterIndex,
+				Summary:      fmt.Sprintf("Pipeline completed Chapter %d (Version: %d, Words: %d)", chapterIndex, nextVersionNum, wordCount),
+			}).Error; err != nil {
+				return err
+			}
 
-		return nil
-	})
+			return nil
+		})
+		if err == nil {
+			break
+		}
+		if !isDuplicateVersionPersistErr(err) {
+			break
+		}
+	}
 
 	if err != nil {
 		logger.Info("Warning: failed to persist chapter content: %v", err)
 	} else {
 		logger.Info("Auto-persisted chapter content: Book=%d Chapter=%d Words=%d", bookID, chapterID, wordCount)
 	}
+}
+
+func isDuplicateVersionPersistErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") || strings.Contains(msg, "duplicate key")
 }
 
 // ContextAssembler 接口，用于解耦 DirectorAgent 与 ContextManager

@@ -3,6 +3,7 @@ package main
 import (
 	"ai_novel/internal/config"
 	"ai_novel/internal/handler"
+	"ai_novel/internal/service"
 	"ai_novel/internal/service/agent"
 	svccontext "ai_novel/internal/service/context"
 	"ai_novel/internal/service/llm"
@@ -102,12 +103,23 @@ func main() {
 	ragService := rag.NewMemoryRecallService(db, llmProvider, vStore)
 	ctxMgr := svccontext.NewContextManager(db, summarizerAgent, writerAgent, ragService)
 
+	// Post-write processor (统一后处理器)
+	processor := &service.PostWriteProcessor{
+		DB:          db,
+		State:       stateAgent,
+		Foresight:   foresightAgent,
+		Consistency: consistencyAgent,
+		Summarizer:  summarizerAgent,
+		RAG:         ragService,
+	}
+
 	// 4. Initialize Handler
-	novelHandler := handler.NewNovelHandler(db, directorAgent, outlinerAgent, writerAgent, stateAgent, foresightAgent, consistencyAgent, summarizerAgent, ctxMgr, ragService)
+	novelHandler := handler.NewNovelHandler(db, directorAgent, outlinerAgent, writerAgent, stateAgent, foresightAgent, consistencyAgent, summarizerAgent, ctxMgr, ragService, processor)
 	bookHandler := handler.NewBookHandler(db, llmProvider)
 	planAgent := agent.NewPlanAgent(llmProvider)
 	planHandler := handler.NewPlanHandler(db, planAgent, directorAgent, characterAgent, chapterTitleAgent, ragService)
 	configHandler := handler.NewConfigHandler()
+	outlineHandler := handler.NewOutlineHandler(db, llmProvider)
 
 	// 5. Initialize Router
 	gin.SetMode(config.GlobalConfig.Server.Mode)
@@ -130,7 +142,7 @@ func main() {
 	})
 
 	// Register Routes
-	handler.RegisterRoutes(r, novelHandler, bookHandler, planHandler, configHandler)
+	handler.RegisterRoutes(r, novelHandler, bookHandler, planHandler, configHandler, outlineHandler)
 
 	// Root redirect to /ui
 	r.GET("/", func(c *gin.Context) {

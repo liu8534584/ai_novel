@@ -48,14 +48,14 @@ type PromptBindings struct {
 
 // CharacterDynamicState 角色动态状态表
 type CharacterDynamicState struct {
-	IdentityLocation       string `json:"identity_location"`       // 当前身份 / 位置
-	Goal                   string `json:"goal"`                    // 当前目标
-	EmotionalState         string `json:"emotional_state"`         // 当前情绪状态
-	RelationshipChanges    string `json:"relationship_changes"`    // 当前关系变化
+	IdentityLocation       string `json:"identity_location"`        // 当前身份 / 位置
+	Goal                   string `json:"goal"`                     // 当前目标
+	EmotionalState         string `json:"emotional_state"`          // 当前情绪状态
+	RelationshipChanges    string `json:"relationship_changes"`     // 当前关系变化
 	AbilityResourceChanges string `json:"ability_resource_changes"` // 能力 / 资源变化
-	ConstraintsCosts       string `json:"constraints_costs"`       // 新增限制或代价
-	KeyActions             string `json:"key_actions"`             // 本章关键行为
-	ConflictsForeshadowing string `json:"conflicts_foreshadowing"` // 潜在矛盾 / 伏笔
+	ConstraintsCosts       string `json:"constraints_costs"`        // 新增限制或代价
+	KeyActions             string `json:"key_actions"`              // 本章关键行为
+	ConflictsForeshadowing string `json:"conflicts_foreshadowing"`  // 潜在矛盾 / 伏笔
 }
 
 // CharacterState represents the dynamic state of the character.
@@ -85,19 +85,19 @@ type CurrentState struct {
 type Book struct {
 	BaseModel
 	Title         string `json:"title" gorm:"index;not null"`
-	Author        string         `json:"author"`
-	Genre         string         `json:"genre" gorm:"index"`
-	Tags          string         `json:"tags"`     // 标签，逗号分隔
-	Language      string         `json:"language"` // 创作语言
-	Description   string         `json:"description" gorm:"type:text"`
-	TotalChapters int            `json:"total_chapters" gorm:"default:1"`
-	Status        string         `json:"status" gorm:"index;default:'draft'"` // draft, planning, writing, completed
+	Author        string `json:"author"`
+	Genre         string `json:"genre" gorm:"index"`
+	Tags          string `json:"tags"`     // 标签，逗号分隔
+	Language      string `json:"language"` // 创作语言
+	Description   string `json:"description" gorm:"type:text"`
+	TotalChapters int    `json:"total_chapters" gorm:"default:1"`
+	Status        string `json:"status" gorm:"index;default:'draft'"` // draft, planning, writing, completed
 
 	// WorldSetting and CurrentState are stored as JSON strings in the database
 	// GORM's serializer:json tag automatically handles marshalling/unmarshalling
-	WorldSetting WorldSetting `gorm:"serializer:json" json:"world_setting"`
-	CurrentState CurrentState `gorm:"serializer:json" json:"current_state"`
-	LLMConfig    BookLLMConfig `gorm:"serializer:json" json:"llm_config"`
+	WorldSetting   WorldSetting   `gorm:"serializer:json" json:"world_setting"`
+	CurrentState   CurrentState   `gorm:"serializer:json" json:"current_state"`
+	LLMConfig      BookLLMConfig  `gorm:"serializer:json" json:"llm_config"`
 	PromptBindings PromptBindings `gorm:"serializer:json" json:"prompt_bindings"`
 
 	Chapters   []Chapter   `json:"chapters" gorm:"foreignKey:BookID"`
@@ -107,8 +107,8 @@ type Book struct {
 // ChapterVersion represents a version of a chapter content.
 type ChapterVersion struct {
 	BaseModel
-	ChapterID uint   `json:"chapter_id" gorm:"index"`
-	Version   int    `json:"version"`
+	ChapterID uint   `json:"chapter_id" gorm:"index;uniqueIndex:idx_chapter_version_unique"`
+	Version   int    `json:"version" gorm:"uniqueIndex:idx_chapter_version_unique"`
 	Title     string `json:"title"`
 	Content   string `json:"content" gorm:"type:text"`
 	WordCount int    `json:"word_count"`
@@ -118,28 +118,28 @@ type ChapterVersion struct {
 // VectorRecord represents a vectorized chunk of content for RAG.
 type VectorRecord struct {
 	BaseModel
-	BookID    uint    `json:"book_id" gorm:"index"`
-	ChapterID uint    `json:"chapter_id" gorm:"index"`
-	Category  string  `json:"category" gorm:"index"`         // chapter, event, character
-	Content   string  `json:"content" gorm:"type:text"`
-	Embedding string  `json:"embedding" gorm:"type:text"` // 存储为 JSON 字符串
-	Metadata  string  `json:"metadata" gorm:"type:text"`     // 存储为 JSON 字符串
+	BookID    uint   `json:"book_id" gorm:"index"`
+	ChapterID uint   `json:"chapter_id" gorm:"index"`
+	Category  string `json:"category" gorm:"index"` // chapter, event, character
+	Content   string `json:"content" gorm:"type:text"`
+	Embedding string `json:"embedding" gorm:"type:text"` // 存储为 JSON 字符串
+	Metadata  string `json:"metadata" gorm:"type:text"`  // 存储为 JSON 字符串
 }
 
 // Chapter represents a chapter in the book.
 type Chapter struct {
 	BaseModel
-	BookID         uint             `json:"book_id"`
-	Title          string           `json:"title"`
-	Content        string           `json:"content" gorm:"type:text"`
-	Order          int              `json:"order"`
-	Objective      string           `json:"objective" gorm:"type:text"`   // 章节目标
-	Summary        string           `json:"summary" gorm:"type:text"`     // 章节摘要
+	BookID             uint             `json:"book_id"`
+	Title              string           `json:"title"`
+	Content            string           `json:"content" gorm:"type:text"`
+	Order              int              `json:"order"`
+	Objective          string           `json:"objective" gorm:"type:text"`   // 章节目标
+	Summary            string           `json:"summary" gorm:"type:text"`     // 章节摘要
 	UserIntent         string           `json:"user_intent" gorm:"type:text"` // 用户写作意图
 	Outline            string           `json:"outline" gorm:"type:text"`     // 章节大纲 (JSON string)
 	IsOutlineConfirmed bool             `json:"is_outline_confirmed" gorm:"default:false"`
 	CurrentVersion     int              `json:"current_version" gorm:"default:1"`
-	Versions       []ChapterVersion `json:"versions" gorm:"foreignKey:ChapterID"`
+	Versions           []ChapterVersion `json:"versions" gorm:"foreignKey:ChapterID"`
 }
 
 // Character represents a character in the book (Static info).
@@ -150,8 +150,8 @@ type Character struct {
 	Role         string                `json:"role"` // e.g., Protagonist, Antagonist
 	Description  string                `json:"description"`
 	DynamicState CharacterDynamicState `gorm:"serializer:json;type:json" json:"dynamic_state"` // 角色动态状态表
-	Inventory    []string              `gorm:"serializer:json;type:json" json:"inventory"`      // LitRPG: 全局物品栏
-	Stats        map[string]int        `gorm:"serializer:json;type:json" json:"stats"`          // LitRPG: 数值面板 (HP/MP/Exp 等)
+	Inventory    []string              `gorm:"serializer:json;type:json" json:"inventory"`     // LitRPG: 全局物品栏
+	Stats        map[string]int        `gorm:"serializer:json;type:json" json:"stats"`         // LitRPG: 数值面板 (HP/MP/Exp 等)
 }
 
 // CharacterStateRecord 角色状态变更记录 (历史轨迹)
@@ -168,12 +168,12 @@ type StoryEvent struct {
 	BookID             uint   `json:"book_id" gorm:"index"`
 	ChapterID          uint   `json:"chapter_id" gorm:"index"`
 	ChapterIndex       int    `json:"chapter_index"`
-	EventType          string `json:"event_type"`                   // 主线推进, 冲突升级, 世界规则揭示, 角色转折
-	Description        string `json:"description" gorm:"type:text"` // 事件描述
-	InvolvedCharacters string `json:"involved_characters"`          // 涉及角色
-	DirectConsequence  string `json:"direct_consequence" gorm:"type:text"`  // 直接后果
-	UnresolvedImpact   string `json:"unresolved_impact" gorm:"type:text"`    // 潜在影响 (伏笔核心)
-	Importance         int    `json:"importance"`                   // 重要程度: 1 ~ 5
+	EventType          string `json:"event_type"`                          // 主线推进, 冲突升级, 世界规则揭示, 角色转折
+	Description        string `json:"description" gorm:"type:text"`        // 事件描述
+	InvolvedCharacters string `json:"involved_characters"`                 // 涉及角色
+	DirectConsequence  string `json:"direct_consequence" gorm:"type:text"` // 直接后果
+	UnresolvedImpact   string `json:"unresolved_impact" gorm:"type:text"`  // 潜在影响 (伏笔核心)
+	Importance         int    `json:"importance"`                          // 重要程度: 1 ~ 5
 }
 
 type OutlineVersion struct {
@@ -271,18 +271,18 @@ func (b *Book) ApplyStateUpdate(update StateUpdate) error {
 type Foreshadowing struct {
 	BaseModel
 	BookID                uint   `json:"book_id" gorm:"index"`
-	ChapterID             uint   `json:"chapter_id" gorm:"index"`      // 引入伏笔的章节ID
-	ChapterIndex          int    `json:"chapter_index"`                // 引入伏笔的章节序号
-	EventType             string `json:"event_type"`                   // 事件类型：主线推进, 冲突升级, 世界规则揭示...
-	Description           string `json:"description" gorm:"type:text"` // 伏笔描述
-	InvolvedCharacters    string `json:"involved_characters"`          // 涉及角色
-	DirectConsequence     string `json:"direct_consequence"`           // 直接后果
+	ChapterID             uint   `json:"chapter_id" gorm:"index"`            // 引入伏笔的章节ID
+	ChapterIndex          int    `json:"chapter_index"`                      // 引入伏笔的章节序号
+	EventType             string `json:"event_type"`                         // 事件类型：主线推进, 冲突升级, 世界规则揭示...
+	Description           string `json:"description" gorm:"type:text"`       // 伏笔描述
+	InvolvedCharacters    string `json:"involved_characters"`                // 涉及角色
+	DirectConsequence     string `json:"direct_consequence"`                 // 直接后果
 	UnresolvedImpact      string `json:"unresolved_impact" gorm:"type:text"` // 未解决的影响 (伏笔核心)
-	Status                string `json:"status" gorm:"index"`          // 状态: open, resolved, deprecated
-	Importance            int    `json:"importance"`                   // 重要程度: 1 ~ 5
-	LastReferencedChapter int    `json:"last_referenced_chapter"`      // 最近一次被提及或相关的章节序号
-	ResolvedChapterIndex  int    `json:"resolved_chapter_index"`       // 回收伏笔的章节序号
-	ResolveReason         string `json:"resolve_reason" gorm:"type:text"` // 回收说明
+	Status                string `json:"status" gorm:"index"`                // 状态: open, resolved, deprecated
+	Importance            int    `json:"importance"`                         // 重要程度: 1 ~ 5
+	LastReferencedChapter int    `json:"last_referenced_chapter"`            // 最近一次被提及或相关的章节序号
+	ResolvedChapterIndex  int    `json:"resolved_chapter_index"`             // 回收伏笔的章节序号
+	ResolveReason         string `json:"resolve_reason" gorm:"type:text"`    // 回收说明
 }
 
 // CharacterAnchor 角色性格锚点 (稳定，慢变)
@@ -301,12 +301,12 @@ type OOCScore struct {
 	BaseModel
 	CharacterID            uint    `json:"character_id"`
 	ChapterID              uint    `json:"chapter_id"`
-	PersonalityConsistency float64 `json:"personality_consistency"` // 性格一致性偏离评分 (0–100)
-	MotivationConsistency  float64 `json:"motivation_consistency"`  // 动机一致性偏离评分 (0–100)
-	EmotionalReasonability float64 `json:"emotional_reasonability"` // 情绪反应合理性评分 (0–100)
-	CostMissing            float64 `json:"cost_missing"`            // 行为代价缺失评分 (0–100)
-	TotalScore             float64 `json:"total_score"`             // 综合 OOC 评分 (0–100)
-	Conclusion             string  `json:"conclusion"`              // 结论: 无明显 OOC / 轻度 OOC / 明显 OOC / 严重 OOC
+	PersonalityConsistency float64 `json:"personality_consistency"`      // 性格一致性偏离评分 (0–100)
+	MotivationConsistency  float64 `json:"motivation_consistency"`       // 动机一致性偏离评分 (0–100)
+	EmotionalReasonability float64 `json:"emotional_reasonability"`      // 情绪反应合理性评分 (0–100)
+	CostMissing            float64 `json:"cost_missing"`                 // 行为代价缺失评分 (0–100)
+	TotalScore             float64 `json:"total_score"`                  // 综合 OOC 评分 (0–100)
+	Conclusion             string  `json:"conclusion"`                   // 结论: 无明显 OOC / 轻度 OOC / 明显 OOC / 严重 OOC
 	Explanation            string  `json:"explanation" gorm:"type:text"` // 说明
 }
 
@@ -315,8 +315,8 @@ type StoryContradiction struct {
 	BaseModel
 	BookID      uint   `json:"book_id"`
 	ChapterID   uint   `json:"chapter_id"`
-	Type        string `json:"type"`        // 逻辑冲突 / 设定冲突 / 状态冲突
-	Severity    string `json:"severity"`    // 轻微 / 显著 / 严重
+	Type        string `json:"type"`     // 逻辑冲突 / 设定冲突 / 状态冲突
+	Severity    string `json:"severity"` // 轻微 / 显著 / 严重
 	Description string `json:"description" gorm:"type:text"`
 	Reference   string `json:"reference" gorm:"type:text"`
 	Suggestion  string `json:"suggestion" gorm:"type:text"`
@@ -327,10 +327,10 @@ type ChapterHealthScore struct {
 	BaseModel
 	BookID           uint    `json:"book_id"`
 	ChapterID        uint    `json:"chapter_id"`
-	OOCScore         float64 `json:"ooc_score"`          // OOC 平均分
-	EventConsistency float64 `json:"event_consistency"` // 剧情一致性得分 (100 - 扣分)
-	Foreshadowing    float64 `json:"foreshadowing"`    // 伏笔活跃度/回收质量得分
-	TotalHealth      float64 `json:"total_health"`      // 综合健康度评分
+	OOCScore         float64 `json:"ooc_score"`                     // OOC 平均分
+	EventConsistency float64 `json:"event_consistency"`             // 剧情一致性得分 (100 - 扣分)
+	Foreshadowing    float64 `json:"foreshadowing"`                 // 伏笔活跃度/回收质量得分
+	TotalHealth      float64 `json:"total_health"`                  // 综合健康度评分
 	AuditReport      string  `json:"audit_report" gorm:"type:text"` // 审计建议
 }
 
@@ -349,11 +349,17 @@ type StoryArc struct {
 // ChapterBlueprint 表示单章蓝图，由远程大模型基于 StoryArc 生成
 type ChapterBlueprint struct {
 	gorm.Model
-	BookID           uint   `json:"book_id" gorm:"index"`
-	ChapterIndex     int    `json:"chapter_index" gorm:"index"`
-	Title            string `json:"title"`
-	Summary          string `json:"summary" gorm:"type:text"`           // 本章预计发生什么
-	CharacterChanges string `json:"character_changes" gorm:"type:text"` // 预计角色状态变化
-	WorldChanges     string `json:"world_changes" gorm:"type:text"`     // 预计世界线变动
-	NewForeshadowing string `json:"new_foreshadowing" gorm:"type:text"` // 新增伏笔
+	BookID                uint   `json:"book_id" gorm:"index"`
+	ChapterIndex          int    `json:"chapter_index" gorm:"index"`
+	Title                 string `json:"title"`
+	Summary               string `json:"summary" gorm:"type:text"`                // 章节大纲（本章预计发生什么）
+	CharacterChanges      string `json:"character_changes" gorm:"type:text"`      // 预计角色状态变化
+	WorldChanges          string `json:"world_changes" gorm:"type:text"`          // 预计世界线变动
+	NewForeshadowing      string `json:"new_foreshadowing" gorm:"type:text"`      // 新增伏笔
+	ProtagonistMotivation string `json:"protagonist_motivation" gorm:"type:text"` // 主角动机
+	KeyForeshadowing      string `json:"key_foreshadowing" gorm:"type:text"`      // 关键伏笔
+	AppearingCharacters   string `json:"appearing_characters" gorm:"type:text"`   // 出场人物
+	Highlight             string `json:"highlight" gorm:"type:text"`              // 审视亮点
+	CoreEvents            string `json:"core_events" gorm:"type:text"`            // 核心事件
+	Challenges            string `json:"challenges" gorm:"type:text"`             // 面临挑战
 }

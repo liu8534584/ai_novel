@@ -120,6 +120,54 @@ func (s *PgVectorStore) DeleteCollection(ctx context.Context, collectionName str
 	return err
 }
 
+func (s *PgVectorStore) DeleteDocuments(ctx context.Context, collectionName string, filter map[string]interface{}) error {
+	table := s.collectionName(collectionName)
+	if table == "" {
+		return fmt.Errorf("invalid collection name")
+	}
+
+	// Build WHERE clause from filter
+	// Assumes filter keys match keys in the metadata JSONB column
+	if len(filter) == 0 {
+		return nil
+	}
+
+	var whereClauses []string
+	var args []interface{}
+	idx := 1
+
+	for k, v := range filter {
+		// Use JSONB containment or extraction operators
+		// Here we use ->> operator for string comparison or @> for containment
+		// For simplicity, let's support exact match on top-level keys
+		// e.g. metadata->>'chapter_id' = '123'
+		
+		// Note: vectorstore metadata values can be various types.
+		// We cast to string for comparison if possible, or handle numeric types.
+		
+		switch val := v.(type) {
+		case string:
+			whereClauses = append(whereClauses, fmt.Sprintf("metadata->>'%s' = $%d", k, idx))
+			args = append(args, val)
+		case int, int32, int64, uint, uint32, uint64:
+			whereClauses = append(whereClauses, fmt.Sprintf("(metadata->>'%s')::numeric = $%d", k, idx))
+			args = append(args, val)
+		case float32, float64:
+			whereClauses = append(whereClauses, fmt.Sprintf("(metadata->>'%s')::numeric = $%d", k, idx))
+			args = append(args, val)
+		default:
+			// Fallback to string representation
+			whereClauses = append(whereClauses, fmt.Sprintf("metadata->>'%s' = $%d", k, idx))
+			args = append(args, fmt.Sprintf("%v", val))
+		}
+		idx++
+	}
+
+	query := fmt.Sprintf("DELETE FROM %s WHERE %s", table, strings.Join(whereClauses, " AND "))
+	_, err := s.pool.Exec(ctx, query, args...)
+	return err
+}
+
 func (s *PgVectorStore) collectionName(name string) string {
 	safe := strings.ToLower(name)
 	safe = collectionNamePattern.ReplaceAllString(safe, "_")

@@ -135,3 +135,37 @@ func (s *QdrantStore) DeleteCollection(ctx context.Context, collectionName strin
 	})
 	return err
 }
+
+func (s *QdrantStore) DeleteDocuments(ctx context.Context, collectionName string, filter map[string]interface{}) error {
+	if len(filter) == 0 {
+		return nil
+	}
+
+	pointsClient := qdrant.NewPointsClient(s.conn)
+	
+	var conditions []*qdrant.Condition
+	for k, v := range filter {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: k,
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Text{Text: fmt.Sprint(v)},
+					},
+				},
+			},
+		})
+	}
+
+	_, err := pointsClient.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: collectionName,
+		Points: &qdrant.PointsSelector{
+			PointsSelectorOneOf: &qdrant.PointsSelector_Filter{
+				Filter: &qdrant.Filter{
+					Must: conditions,
+				},
+			},
+		},
+	})
+	return err
+}

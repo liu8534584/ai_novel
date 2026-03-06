@@ -290,7 +290,7 @@ func (h *BookHandler) GetBook(c *gin.Context) {
 func (h *BookHandler) ListChapters(c *gin.Context) {
 	bookID := c.Param("id")
 	var chapters []models.Chapter
-	if err := h.db.Where("book_id = ?", bookID).Order("`order` asc").Find(&chapters).Error; err != nil {
+	if err := h.db.Where("book_id = ?", bookID).Order("\"order\" asc").Find(&chapters).Error; err != nil {
 		response.ErrorWithStatus(c, http.StatusInternalServerError, http.StatusInternalServerError, "Failed to fetch chapters")
 		return
 	}
@@ -345,11 +345,34 @@ func (h *BookHandler) DeleteBook(c *gin.Context) {
 	}
 
 	err := h.db.Transaction(func(tx *gorm.DB) error {
-		// 删除关联的章节
+		// 获取所有 chapter IDs 和 character IDs 用于级联
+		var chapterIDs []uint
+		tx.Model(&models.Chapter{}).Where("book_id = ?", idStr).Pluck("id", &chapterIDs)
+		var characterIDs []uint
+		tx.Model(&models.Character{}).Where("book_id = ?", idStr).Pluck("id", &characterIDs)
+
+		// 按外键依赖顺序删除
+		if len(chapterIDs) > 0 {
+			tx.Where("chapter_id IN ?", chapterIDs).Delete(&models.ChapterVersion{})
+			tx.Where("chapter_id IN ?", chapterIDs).Delete(&models.OOCScore{})
+			tx.Where("chapter_id IN ?", chapterIDs).Delete(&models.ChapterHealthScore{})
+			tx.Where("chapter_id IN ?", chapterIDs).Delete(&models.StoryContradiction{})
+		}
+		if len(characterIDs) > 0 {
+			tx.Where("character_id IN ?", characterIDs).Delete(&models.CharacterAnchor{})
+			tx.Where("character_id IN ?", characterIDs).Delete(&models.CharacterStateRecord{})
+		}
+		tx.Where("book_id = ?", idStr).Delete(&models.StoryEvent{})
+		tx.Where("book_id = ?", idStr).Delete(&models.Foreshadowing{})
+		tx.Where("book_id = ?", idStr).Delete(&models.StoryArc{})
+		tx.Where("book_id = ?", idStr).Delete(&models.ChapterBlueprint{})
+		tx.Where("book_id = ?", idStr).Delete(&models.OutlineVersion{})
+		tx.Where("book_id = ?", idStr).Delete(&models.VectorRecord{})
+
+		// 删除章节和角色
 		if err := tx.Where("book_id = ?", idStr).Delete(&models.Chapter{}).Error; err != nil {
 			return err
 		}
-		// 删除关联的角色
 		if err := tx.Where("book_id = ?", idStr).Delete(&models.Character{}).Error; err != nil {
 			return err
 		}

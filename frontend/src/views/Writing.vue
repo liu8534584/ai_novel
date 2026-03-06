@@ -253,6 +253,8 @@ const foreshadowingAlerts = ref<any[]>([])
 
 const currentChapter = computed(() => chapters.value.find(c => c.id === currentChapterId.value))
 
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
 const getOOCLevel = (score: number) => {
   if (score < 30) return 'success'
   if (score < 50) return 'warning'
@@ -374,11 +376,109 @@ const selectChapter = (chapter: any) => {
 const generateOutline = async () => {
   if (!currentChapter.value) return
   outlining.value = true
+  const previousOutline = currentChapter.value.outline
+  const previousConfirmed = currentChapter.value.is_outline_confirmed
+  let typingQueue: string[] = []
+  let typingTimer: ReturnType<typeof setInterval> | null = null
+
+  const startTyping = () => {
+    if (typingTimer) return
+    typingTimer = setInterval(() => {
+      if (typingQueue.length === 0) {
+        if (typingTimer) {
+          clearInterval(typingTimer)
+          typingTimer = null
+        }
+        return
+      }
+      const ch = typingQueue.shift()!
+      if (currentChapter.value) {
+        currentChapter.value.outline += ch
+      }
+    }, 10)
+  }
+
+  const enqueueText = (text: string) => {
+    const chars = Array.from(text)
+    if (chars.length === 0) return
+    typingQueue.push(...chars)
+    startTyping()
+  }
+
+  const waitForQueueDrain = async () => {
+    while (typingQueue.length > 0 || typingTimer !== null) {
+      await delay(20)
+    }
+  }
+
   try {
-    await axios.post(`/api/chapters/${currentChapter.value.id}/outline`)
-    ElMessage.success('本章大纲生成成功')
-    await fetchBookData() // 刷新以获取更新的大纲和确认状态
+    const response = await fetch(`/api/chapters/${currentChapter.value.id}/outline`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
+    if (!response.ok) {
+      let errorMsg = `请求失败 (${response.status})`
+      try {
+        const payload = await response.json()
+        if (payload?.error) errorMsg = payload.error
+      } catch {
+        const text = await response.text()
+        if (text) errorMsg = text
+      }
+      ElMessage.error(errorMsg)
+      return
+    }
+    if (!response.body) {
+      ElMessage.error('生成大纲失败：无流式响应')
+      return
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    currentChapter.value.outline = ''
+    currentChapter.value.is_outline_confirmed = false
+
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      let currentEvent = ''
+      for (const line of lines) {
+        const trimmedLine = line.trim()
+        if (!trimmedLine) continue
+        if (trimmedLine.startsWith('event:')) {
+          currentEvent = trimmedLine.slice(6).trim()
+        } else if (trimmedLine.startsWith('data:')) {
+          const dataStr = trimmedLine.slice(5).trim()
+          try {
+            const data = JSON.parse(dataStr)
+            if (currentEvent === 'message') {
+              enqueueText(String(data))
+            } else if (currentEvent === 'end') {
+              await waitForQueueDrain()
+              ElMessage.success('本章大纲生成成功')
+            } else if (currentEvent === 'error') {
+              ElMessage.error('生成大纲出错: ' + data)
+            }
+          } catch {
+            if (currentEvent === 'message') {
+              enqueueText(dataStr)
+            }
+          }
+        }
+      }
+    }
+    await waitForQueueDrain()
   } catch (error) {
+    if (typingTimer) clearInterval(typingTimer)
+    currentChapter.value.outline = previousOutline
+    currentChapter.value.is_outline_confirmed = previousConfirmed
     ElMessage.error('生成大纲失败')
   } finally {
     outlining.value = false
@@ -453,7 +553,42 @@ const savePlan = async () => {
 const writeChapter = async () => {
   if (!currentChapter.value) return
   writing.value = true
-  currentChapter.value.content = '' // 清空内容准备续写
+  const previousContent = currentChapter.value.content
+  let generatedContent = ''
+  let hasChunk = false
+  let typingQueue: string[] = []
+  let typingTimer: ReturnType<typeof setInterval> | null = null
+
+  const startTyping = () => {
+    if (typingTimer) return
+    typingTimer = setInterval(() => {
+      if (typingQueue.length === 0) {
+        if (typingTimer) {
+          clearInterval(typingTimer)
+          typingTimer = null
+        }
+        return
+      }
+      const ch = typingQueue.shift()!
+      generatedContent += ch
+      if (currentChapter.value) {
+        currentChapter.value.content = generatedContent
+      }
+    }, 10)
+  }
+
+  const enqueueText = (text: string) => {
+    const chars = Array.from(text)
+    if (chars.length === 0) return
+    typingQueue.push(...chars)
+    startTyping()
+  }
+
+  const waitForQueueDrain = async () => {
+    while (typingQueue.length > 0 || typingTimer !== null) {
+      await delay(20)
+    }
+  }
 
   try {
     const response = await fetch(`/api/chapters/${currentChapter.value.id}/write`, {
@@ -462,6 +597,21 @@ const writeChapter = async () => {
         'Content-Type': 'application/json',
       },
     })
+
+    if (!response.ok) {
+      let errorMsg = `请求失败 (${response.status})`
+      try {
+        const payload = await response.json()
+        if (payload?.error) {
+          errorMsg = payload.error
+        }
+      } catch {
+        const text = await response.text()
+        if (text) errorMsg = text
+      }
+      ElMessage.error(errorMsg)
+      return
+    }
 
     if (!response.body) return
 
@@ -489,8 +639,13 @@ const writeChapter = async () => {
           try {
             const data = JSON.parse(dataStr)
             if (currentEvent === 'message') {
-              currentChapter.value.content += data
+              if (!hasChunk) {
+                currentChapter.value.content = ''
+                hasChunk = true
+              }
+              enqueueText(String(data))
             } else if (currentEvent === 'end') {
+              await waitForQueueDrain()
               ElMessage.success('生成完成')
               fetchAuditData(currentChapter.value.id)
             } else if (currentEvent === 'error') {
@@ -499,13 +654,20 @@ const writeChapter = async () => {
           } catch (e) {
             // 如果不是 JSON，尝试直接使用内容
             if (currentEvent === 'message') {
-              currentChapter.value.content += dataStr
+              if (!hasChunk) {
+                currentChapter.value.content = ''
+                hasChunk = true
+              }
+              enqueueText(dataStr)
             }
           }
         }
       }
     }
+    await waitForQueueDrain()
   } catch (error) {
+    if (typingTimer) clearInterval(typingTimer)
+    currentChapter.value.content = previousContent
     ElMessage.error('生成失败')
   } finally {
     writing.value = false

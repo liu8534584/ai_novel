@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS chapter_versions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chapter_versions_chapter_id ON chapter_versions (chapter_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_versions_chapter_id_version ON chapter_versions (chapter_id, version);
 CREATE INDEX IF NOT EXISTS idx_chapter_versions_deleted_at ON chapter_versions (deleted_at);
 
 CREATE TABLE IF NOT EXISTS vector_records (
@@ -529,40 +530,25 @@ $planner_twist$, now(), '系统内置', true),
 3. 配角应能推动剧情，而非工具人
 
 【输出格式要求】
-必须输出为 JSON 对象格式，包含一个 "characters" 键，对应的值为角色数组。
-例如：
+必须【仅输出】 JSON 对象格式，严禁包含任何前言、后记、解释性文字、或者是“Thinking Process”（思考过程）。
+直接以 "{" 开头并以 "}" 结尾。
+JSON 结构如下：
 {
   "characters": [
     {
       "name": "角色名",
       "role": "Protagonist / Antagonist / Supporting",
       "description": "身份背景、初始状态与成长方向的综合描述（不可为空）",
-      "anchor": { ... },
-      "stats": { ... },
-      "inventory": [ ... ],
-      "skills": [ ... ]
+      "anchor": {
+        "personality_labels": ["标签1", "标签2"],
+        "core_motivation": "核心驱动力",
+        "behavior_bottom_line": "行为底线",
+        "decision_tendency": "决策偏好",
+        "emotional_triggers": "情感触发点"
+      }
     }
   ]
 }
-
-每个角色对象必须包含以下字段：
-- name: 角色名
-- role: 角色类型 (Protagonist, Antagonist, Supporting)
-- description: 身份背景、初始状态与成长方向的综合描述。请确保描述详细，不要留空。
-- anchor: 对象，包含以下性格锚点字段：
-    - personality_labels: 核心性格标签 (例如: "冷静, 孤独, 执着")
-    - core_motivation: 核心动机 (例如: "复仇并寻找失踪的妹妹")
-    - behavior_bottom_line: 行为底线 (例如: "绝不伤害无辜弱小")
-    - decision_tendency: 决策倾向 (例如: "保守 / 激进 / 利己 / 利他")
-    - emotional_triggers: 情绪触发点 (例如: "被提及背叛时会失控")
-- stats: 初始属性对象 (例如: {"hp": 100, "mp": 50})
-- inventory: 初始物品数组
-- skills: 初始技能数组
-
-【注意】
-- 确保生成 3-5 个主要角色。
-- 确保 JSON 格式严格正确，不要截断。
-- 描述字段 (description) 必须包含实质性内容。
 $character$, now(), '系统内置', true),
 ('chapter_title', '章节标题（全量）', 'plan', '', $chapter_title$
 你是一名网络小说章节策划。
